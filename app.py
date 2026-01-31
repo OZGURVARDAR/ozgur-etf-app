@@ -2,11 +2,12 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 st.title("📊 Özgür ETF - Profesyonel Portföy Terminali")
 
+# 1. VERİ ÇEKME
 sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
 url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 
@@ -20,8 +21,11 @@ def load_data():
 try:
     df_trades = load_data()
     symbols = df_trades['Symbol'].unique().tolist()
+    
+    # Verileri çekiyoruz
     prices_ohlc = yf.download(symbols, start="2025-11-01", interval="1d")
     
+    # HESAPLAMA (Kümülatif)
     portfolio_ohlc = pd.DataFrame(index=prices_ohlc.index)
     for col in ['Open', 'High', 'Low', 'Close']:
         portfolio_ohlc[col] = 0.0
@@ -31,9 +35,10 @@ try:
             cumulative_quantity = symbol_trades['Quantity'].cumsum()
             portfolio_ohlc[col] += prices_ohlc[col][symbol] * cumulative_quantity
 
-    # İlk alımdan önceki boş günleri ve hafta sonlarını temizle
+    # BOŞLUK TEMİZLİĞİ: Sadece verisi olan günleri tut, NaN olanları sil
     portfolio_ohlc = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
 
+    # 2. GRAFİK OLUŞTURMA
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
         x=portfolio_ohlc.index,
@@ -43,17 +48,15 @@ try:
         close=portfolio_ohlc['Close'],
         increasing_line_color='#089981', decreasing_line_color='#f23645',
         increasing_fillcolor='#089981', decreasing_fillcolor='#f23645',
-        line=dict(width=1),
-        name="Özgür ETF"
+        name="Portföy Değeri"
     ))
 
-    # --- TRADINGVIEW ESNEKLİĞİ VE BOŞLUK GİDERME ---
+    # --- TATİL GÜNLERİNİ ÇIKARMA VE GÖRSEL DÜZENLEME ---
     fig.update_xaxes(
         type='date',
-        rangebreaks=[dict(bounds=["sat", "mon"])], # Hafta sonu boşluklarını siler
+        # Hafta sonlarını (Cumartesi-Pazar) grafikten tamamen siler
+        rangebreaks=[dict(bounds=["sat", "mon"])], 
         gridcolor="#2a2e39",
-        # Tarih skalası esnekliği
-        fixedrange=False,
         rangeselector=dict(
             buttons=list([
                 dict(count=5, label="5G", step="day", stepmode="backward"),
@@ -64,39 +67,33 @@ try:
                 dict(count=1, label="1Y", step="year", stepmode="backward"),
                 dict(step="all", label="Tümü")
             ]),
-            bgcolor="#1e222d", activecolor="#2962ff"
+            bgcolor="#1e222d", activecolor="#2962ff", font=dict(color="white")
         )
     )
 
     fig.update_layout(
         template='plotly_dark',
-        height=800,
+        height=750,
         xaxis_rangeslider_visible=False,
-        # Fiyat skalası esnekliği (Sağda)
         yaxis=dict(
             side="right",
-            fixedrange=False, 
             gridcolor="#2a2e39",
-            tickformat=",.0f"
+            tickformat="$,.0f"
         ),
         paper_bgcolor='#131722',
         plot_bgcolor='#131722',
-        margin=dict(l=10, r=50, t=30, b=10),
-        # Mouse ile seçim yerine kaydırma/ölçeklendirme modu
-        dragmode='pan'
+        margin=dict(l=10, r=50, t=30, b=10)
     )
 
-    # Streamlit üzerinde skalayı çekebilmek için konfigürasyon
-    st.plotly_chart(fig, use_container_width=True, config={
-        'scrollZoom': True,           # Mouse tekerleği ile zoom
-        'displayModeBar': True,       # Mod barını göster
-        'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'], # Çizim araçları (Opsiyonel)
-        'editable': True              # Eksenlerin elle çekilebilmesini sağlar
-    })
+    st.plotly_chart(fig, use_container_width=True)
 
-    # ANALİZ PANELİ
+    # ANALİZ PANELİ (Alt Kısım)
+    c1, c2, c3 = st.columns(3)
     curr = portfolio_ohlc['Close'].iloc[-1]
-    st.metric("Güncel Portföy Değeri", f"${curr:,.2f}")
+    change_pct = ((curr / portfolio_ohlc['Close'].iloc[-2]) - 1) * 100
+    c1.metric("Anlık Değer", f"${curr:,.2f}", f"{change_pct:+.2f}%")
+    c2.metric("Toplam Hisse", len(symbols))
+    c3.info(f"Son Veri: {portfolio_ohlc.index[-1].strftime('%d.%m.%Y')}")
 
 except Exception as e:
     st.error(f"Hata: {e}")
