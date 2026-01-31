@@ -2,12 +2,11 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 st.title("📊 Özgür ETF - Profesyonel Portföy Terminali")
 
-# 1. VERİ ÇEKME
 sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
 url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 
@@ -21,11 +20,8 @@ def load_data():
 try:
     df_trades = load_data()
     symbols = df_trades['Symbol'].unique().tolist()
-    
-    # Verileri çekiyoruz
     prices_ohlc = yf.download(symbols, start="2025-11-01", interval="1d")
     
-    # HESAPLAMA (Kümülatif)
     portfolio_ohlc = pd.DataFrame(index=prices_ohlc.index)
     for col in ['Open', 'High', 'Low', 'Close']:
         portfolio_ohlc[col] = 0.0
@@ -35,13 +31,16 @@ try:
             cumulative_quantity = symbol_trades['Quantity'].cumsum()
             portfolio_ohlc[col] += prices_ohlc[col][symbol] * cumulative_quantity
 
-    # BOŞLUK TEMİZLİĞİ: Sadece verisi olan günleri tut, NaN olanları sil
+    # Sadece verinin olduğu günleri al
     portfolio_ohlc = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
 
-    # 2. GRAFİK OLUŞTURMA
+    # TARİHLERİ FORMATLI LİSTEYE ÇEVİR (Boşlukları bitirmek için kritik)
+    # Bu, x eksenini "tarih" değil "etiket" (label) yapar.
+    date_strings = portfolio_ohlc.index.strftime('%Y-%m-%d')
+
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
-        x=portfolio_ohlc.index,
+        x=date_strings, # Tarih objesi yerine metin listesi kullanıyoruz
         open=portfolio_ohlc['Open'],
         high=portfolio_ohlc['High'],
         low=portfolio_ohlc['Low'],
@@ -51,24 +50,12 @@ try:
         name="Portföy Değeri"
     ))
 
-    # --- TATİL GÜNLERİNİ ÇIKARMA VE GÖRSEL DÜZENLEME ---
+    # --- TAMAMEN BİTİŞİK MUM AYARLARI ---
     fig.update_xaxes(
-        type='date',
-        # Hafta sonlarını (Cumartesi-Pazar) grafikten tamamen siler
-        rangebreaks=[dict(bounds=["sat", "mon"])], 
+        type='category', # BU SATIR TÜM BOŞLUKLARI (Hafta sonu + Tatil) SİLER
         gridcolor="#2a2e39",
-        rangeselector=dict(
-            buttons=list([
-                dict(count=5, label="5G", step="day", stepmode="backward"),
-                dict(count=1, label="1A", step="month", stepmode="backward"),
-                dict(count=3, label="3A", step="month", stepmode="backward"),
-                dict(count=6, label="6A", step="month", stepmode="backward"),
-                dict(count=1, label="YTD", step="year", stepmode="todate"),
-                dict(count=1, label="1Y", step="year", stepmode="backward"),
-                dict(step="all", label="Tümü")
-            ]),
-            bgcolor="#1e222d", activecolor="#2962ff", font=dict(color="white")
-        )
+        nticks=20, # Eksen etiketlerini sadeleştirir
+        tickangle=-45
     )
 
     fig.update_layout(
@@ -87,13 +74,9 @@ try:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # ANALİZ PANELİ (Alt Kısım)
-    c1, c2, c3 = st.columns(3)
+    # ANALİZ PANELİ
     curr = portfolio_ohlc['Close'].iloc[-1]
-    change_pct = ((curr / portfolio_ohlc['Close'].iloc[-2]) - 1) * 100
-    c1.metric("Anlık Değer", f"${curr:,.2f}", f"{change_pct:+.2f}%")
-    c2.metric("Toplam Hisse", len(symbols))
-    c3.info(f"Son Veri: {portfolio_ohlc.index[-1].strftime('%d.%m.%Y')}")
+    st.metric("Anlık Portföy Değeri", f"${curr:,.2f}")
 
 except Exception as e:
     st.error(f"Hata: {e}")
