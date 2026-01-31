@@ -2,22 +2,25 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-# Diğer karmaşık importları şimdilik sildik, hata vermemesi için
 
-# 1. VERİ ÇEKME (Google Sheets Bağlantısı buraya gelecek)
-# Şimdilik Colab'daki mantıkla devam ediyoruz, Streamlit Cloud ayarlarında Sheets'i bağlayacağız.
+st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
+st.title("📊 Özgür ETF - Canlı Portföy Terminali")
 
-# 2. ÖRNEK VERİ SETİ (Geçici olarak sizin alim.JPG verileriniz)
-data = [
-    {'Date': '2025-11-25', 'Symbol': 'NVDA', 'Quantity': 21},
-    {'Date': '2025-11-25', 'Symbol': 'META', 'Quantity': 4},
-    {'Date': '2026-01-05', 'Symbol': 'TSLA', 'Quantity': 6},
-    # Diğer veriler Sheets'ten otomatik akacak...
-]
-df_trades = pd.DataFrame(data)
-df_trades['Date'] = pd.to_datetime(df_trades['Date'])
+# 1. VERİ ÇEKME (Google Sheets Canlı Bağlantı)
+# Buradaki 'DOSYA_ID_BURAYA' kısmına kendi Sheets ID'ni yapıştır
+sheet_id = "DOSYA_ID_BURAYA"
+sheet_name = "Sheet1" # Sayfa adın farklıysa düzelt (Örn: Sayfa1)
+url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
 
-# 3. GÜN İÇİ MUM GRAFİĞİ (OHLC) HESAPLAMA
+@st.cache_data(ttl=600) # Veriyi 10 dakikada bir tazeler
+def load_data():
+    df = pd.read_csv(url)
+    df['Date'] = pd.to_datetime(df['Date'])
+    return df
+
+df_trades = load_data()
+
+# 2. HESAPLAMA VE GRAFİK (Mevcut mantık devam ediyor)
 symbols = df_trades['Symbol'].unique().tolist()
 prices_ohlc = yf.download(symbols, start="2025-11-01", interval="1d")
 
@@ -27,8 +30,7 @@ for col in ['Open', 'High', 'Low', 'Close']:
     for _, trade in df_trades.iterrows():
         portfolio_ohlc.loc[trade['Date']:, col] += prices_ohlc[col][trade['Symbol']] * trade['Quantity']
 
-# 4. GRAFİK GÖRSELLEŞTİRME
-st.subheader("Özgür ETF Günlük Mum Grafiği")
+# 3. GÖRSELLEŞTİRME
 fig = go.Figure(data=[go.Candlestick(
     x=portfolio_ohlc.index,
     open=portfolio_ohlc['Open'],
@@ -37,7 +39,7 @@ fig = go.Figure(data=[go.Candlestick(
     close=portfolio_ohlc['Close']
 )])
 
-fig.update_layout(template='plotly_dark', height=600, xaxis_rangeslider_visible=False)
+fig.update_layout(template='plotly_dark', height=700, xaxis_rangeslider_visible=True)
 st.plotly_chart(fig, use_container_width=True)
 
-st.info("💡 Bu grafik her 15 dakikada bir Yahoo Finance verileriyle güncellenir.")
+st.success(f"Son Güncelleme: {pd.Timestamp.now().strftime('%H:%M:%S')} - Veriler Google Sheets'ten canlı akıyor.")
