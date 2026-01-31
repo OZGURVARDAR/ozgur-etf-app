@@ -2,12 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from google.oauth2 import service_account
-from gspread_pandas import Spread, Client
-
-# Sayfa Ayarları
-st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
-st.title("📊 Özgür ETF - Profesyonel Portföy Terminali")
+# Diğer karmaşık importları şimdilik sildik, hata vermemesi için
 
 # 1. VERİ ÇEKME (Google Sheets Bağlantısı buraya gelecek)
 # Şimdilik Colab'daki mantıkla devam ediyoruz, Streamlit Cloud ayarlarında Sheets'i bağlayacağız.
