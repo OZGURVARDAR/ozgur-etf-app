@@ -34,8 +34,15 @@ url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 @st.cache_data(ttl=300)
 def load_sheet():
     df = pd.read_csv(url)
+
     df["Date"] = pd.to_datetime(df["Date"])
+
+    # 🔴 KRİTİK SATIRLAR (HATA BURADAYDI)
+    df["Cash"] = pd.to_numeric(df["Cash"], errors="coerce").fillna(0)
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
+
     return df.sort_values("Date")
+
 
 df = load_sheet()
 
