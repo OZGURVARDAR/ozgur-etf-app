@@ -30,6 +30,7 @@ url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 def load_data():
     df = pd.read_csv(url)
     df['Date'] = pd.to_datetime(df['Date'])
+    # Aynı gün aynı sembol işlemlerini birleştir
     df = df.groupby(['Date', 'Symbol'])['Quantity'].sum().reset_index()
     return df
 
@@ -37,11 +38,11 @@ try:
     df_trades = load_data()
     symbols = df_trades['Symbol'].unique().tolist()
     
-    # 5Y butonu için 2020'den itibaren çekiyoruz
+    # 5Y butonu için veriyi 2020'den başlatıyoruz
     download_list = symbols + (['SPY'] if show_benchmark else [])
     prices_all = yf.download(download_list, start="2020-01-01", interval="1d")
     
-    # PORTFÖY HESAPLAMA (Tüm sütunlar için)
+    # Portföy OHLC Hesaplama
     portfolio_ohlc = pd.DataFrame(index=prices_all.index)
     for col in ['Open', 'High', 'Low', 'Close']:
         portfolio_ohlc[col] = 0.0
@@ -49,10 +50,12 @@ try:
             s_trades = df_trades[df_trades['Symbol'] == symbol].copy()
             s_trades = s_trades.set_index('Date').reindex(prices_all.index).fillna(0)
             cum_qty = s_trades['Quantity'].cumsum()
-            portfolio_ohlc[col] += prices_all[col][symbol] * cum_qty
+            # Fiyat verisinin Series mi DataFrame mi olduğunu kontrol et (Tek sembol durumu için)
+            price_data = prices_all[col][symbol] if len(download_list) > 1 else prices_all[col]
+            portfolio_ohlc[col] += price_data * cum_qty
 
-    # İşlem olmayan boş günleri temizle
-    portfolio_ohlc = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
+    # Boş günleri temizle ama ana fiyat verisini (prices_all) referans al
+    portfolio_plot = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
     
     # 2. GRAFİK KURGUSU
     rows = 1
@@ -64,45 +67,46 @@ try:
 
     # ANA GRAFİK
     if chart_type == "Heikin Ashi":
-        ha_close = (portfolio_ohlc['Open'] + portfolio_ohlc['High'] + portfolio_ohlc['Low'] + portfolio_ohlc['Close']) / 4
-        ha_open = portfolio_ohlc['Open'].copy()
-        for i in range(1, len(portfolio_ohlc)): 
+        ha_close = (portfolio_plot['Open'] + portfolio_plot['High'] + portfolio_plot['Low'] + portfolio_plot['Close']) / 4
+        ha_open = portfolio_plot['Open'].copy()
+        for i in range(1, len(portfolio_plot)): 
             ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-        fig.add_trace(go.Candlestick(x=portfolio_ohlc.index, open=ha_open, high=portfolio_ohlc['High'], low=portfolio_ohlc['Low'], close=ha_close, name="HA Portföy"), row=1, col=1)
+        fig.add_trace(go.Candlestick(x=portfolio_plot.index, open=ha_open, high=portfolio_plot['High'], low=portfolio_plot['Low'], close=ha_close, name="HA Portföy"), row=1, col=1)
     elif chart_type == "Çizgi Grafik":
-        fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['Close'], line=dict(color='#2962ff', width=1.5), name="Portföy"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=portfolio_plot.index, y=portfolio_plot['Close'], line=dict(color='#2962ff', width=1.5), name="Portföy"), row=1, col=1)
     else:
-        fig.add_trace(go.Candlestick(x=portfolio_ohlc.index, open=portfolio_ohlc['Open'], high=portfolio_ohlc['High'], low=portfolio_ohlc['Low'], close=portfolio_ohlc['Close'], name="Portföy"), row=1, col=1)
+        fig.add_trace(go.Candlestick(x=portfolio_plot.index, open=portfolio_plot['Open'], high=portfolio_plot['High'], low=portfolio_plot['Low'], close=portfolio_plot['Close'], name="Portföy"), row=1, col=1)
 
     # EMA'LAR
     if show_ema:
-        fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['Close'].ewm(span=ema1_val).mean(), line=dict(color='#2962ff', width=0.8), name=f"EMA {ema1_val}"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['Close'].ewm(span=ema2_val).mean(), line=dict(color='#ff9800', width=0.8), name=f"EMA {ema2_val}"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=portfolio_plot.index, y=portfolio_plot['Close'].ewm(span=ema1_val).mean(), line=dict(color='#2962ff', width=0.8), name=f"EMA {ema1_val}"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=portfolio_plot.index, y=portfolio_plot['Close'].ewm(span=ema2_val).mean(), line=dict(color='#ff9800', width=0.8), name=f"EMA {ema2_val}"), row=1, col=1)
 
-    # BENCHMARK (S&P 500) - SABİTLENDİ
+    # BENCHMARK (S&P 500) - FIX
     if show_benchmark and 'SPY' in prices_all['Close']:
-        spy_prices = prices_all['Close']['SPY'].reindex(portfolio_ohlc.index).ffill()
-        bench_norm = (spy_prices / spy_prices.iloc[0]) * portfolio_ohlc['Close'].iloc[0]
-        fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=bench_norm, line=dict(color='rgba(255,255,255,0.4)', width=1, dash='dash'), name="S&P 500 (SPY)"), row=1, col=1)
+        spy_prices = prices_all['Close']['SPY'].loc[portfolio_plot.index[0]:].ffill()
+        bench_norm = (spy_prices / spy_prices.iloc[0]) * portfolio_plot['Close'].iloc[0]
+        fig.add_trace(go.Scatter(x=bench_norm.index, y=bench_norm, line=dict(color='rgba(255,255,255,0.4)', width=1, dash='dash'), name="S&P 500 (SPY)"), row=1, col=1)
 
     # RSI & DRAWDOWN
     curr_row = 2
     if show_rsi:
-        delta = portfolio_ohlc['Close'].diff()
+        delta = portfolio_plot['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + (gain / loss)))
-        fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=rsi, line=dict(color='#9c27b0', width=1), name="RSI"), row=curr_row, col=1)
+        fig.add_trace(go.Scatter(x=portfolio_plot.index, y=rsi, line=dict(color='#9c27b0', width=1), name="RSI"), row=curr_row, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=curr_row, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=curr_row, col=1)
         curr_row += 1
     if show_drawdown:
-        dd = (portfolio_ohlc['Close'] - portfolio_ohlc['Close'].cummax()) / portfolio_ohlc['Close'].cummax() * 100
-        fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=dd, fill='tozeroy', line=dict(color='#f44336', width=0.5), name="Drawdown %"), row=curr_row, col=1)
+        dd = (portfolio_plot['Close'] - portfolio_plot['Close'].cummax()) / portfolio_plot['Close'].cummax() * 100
+        fig.add_trace(go.Scatter(x=portfolio_plot.index, y=dd, fill='tozeroy', line=dict(color='#f44336', width=0.5), name="Drawdown %"), row=curr_row, col=1)
 
-    # BUTONLAR VE TATİL GÜNLERİ
-    dt_all = pd.date_range(start=portfolio_ohlc.index.min(), end=portfolio_ohlc.index.max())
-    dt_breaks = [d.strftime("%Y-%m-%d") for d in dt_all if d not in portfolio_ohlc.index]
+    # BUTONLAR VE TATİL GÜNLERİ (Tüm veri setini kapsayan fix)
+    dt_all = pd.date_range(start=prices_all.index.min(), end=prices_all.index.max())
+    dt_obs = [d.strftime("%Y-%m-%d") for d in prices_all.index]
+    dt_breaks = [d for d in dt_all.strftime("%Y-%m-%d").tolist() if d not in dt_obs]
 
     fig.update_xaxes(
         type='date', gridcolor="#2a2e39", rangebreaks=[dict(values=dt_breaks)],
@@ -125,15 +129,20 @@ try:
         paper_bgcolor='#131722', plot_bgcolor='#131722', margin=dict(l=10, r=50, t=30, b=10)
     )
     fig.update_yaxes(side="right", gridcolor="#2a2e39")
-
-    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline','eraseshape']})
+    st.plotly_chart(fig, use_container_width=True)
 
     # PASTA GRAFİĞİ (SIDEBAR)
     if show_pie:
         st.sidebar.markdown("---")
         st.sidebar.subheader("Portföy Dağılımı")
         last_prices = prices_all['Close'].iloc[-1]
-        pie_values = [df_trades[df_trades['Symbol'] == s]['Quantity'].sum() * last_prices[s] for s in symbols]
+        # Tek sembol hatasını önlemek için handle ediyoruz
+        pie_values = []
+        for s in symbols:
+            qty = df_trades[df_trades['Symbol'] == s]['Quantity'].sum()
+            price = last_prices[s] if len(download_list) > 1 else last_prices
+            pie_values.append(qty * price)
+            
         pie_fig = go.Figure(data=[go.Pie(labels=symbols, values=pie_values, hole=.3)])
         pie_fig.update_layout(template='plotly_dark', height=350, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor='rgba(0,0,0,0)')
         st.sidebar.plotly_chart(pie_fig, use_container_width=True)
