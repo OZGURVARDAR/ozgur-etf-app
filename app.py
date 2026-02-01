@@ -3,95 +3,91 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide")
-st.title("📊 Portföy Getirisi – Temel ve Doğru")
+st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 
-# -----------------------------
-# GOOGLE SHEETS
-# -----------------------------
-sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
-url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+# =====================================================
+# 1) GOOGLE SHEETS (PUBLIC CSV)
+# =====================================================
+SHEET_ID = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
-@st.cache_data
-def load_data():
-    df = pd.read_csv(url)
-    df["Date"] = pd.to_datetime(df["Date"])
+df = pd.read_csv(CSV_URL)
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date")
 
-    # 🔴 ZORUNLU TİP DÖNÜŞÜMÜ
-    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
-    df["Price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0)
-
-    return df
-
-df = load_data()
+# Sadece hisse işlemleri
 df = df[df["Symbol"] != "CASH"]
+df = df[df["Quantity"] > 0]
 
-# -----------------------------
-# SEMBOLLER
-# -----------------------------
+# =====================================================
+# 2) TOPLAM MALİYET
+# =====================================================
+df["Cost"] = df["Quantity"] * df["Price"]
+total_invested = df["Cost"].sum()
+
+# =====================================================
+# 3) GÜNCEL FİYATLAR
+# =====================================================
 symbols = df["Symbol"].unique().tolist()
-start_date = df["Date"].min()
 
-# -----------------------------
-# FİYATLAR
-# -----------------------------
 prices = yf.download(
     symbols,
-    start=start_date,
+    start=df["Date"].min(),
     progress=False
-)["Close"]
+)["Adj Close"]
 
-# -----------------------------
-# POZİSYONLAR
-# -----------------------------
-positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
+if isinstance(prices, pd.Series):
+    prices = prices.to_frame()
 
-for s in symbols:
-    trades = (
-        df[df["Symbol"] == s]
-        .set_index("Date")
-        .reindex(prices.index, fill_value=0)
-    )
-    positions[s] = trades["Quantity"].cumsum()
+# =====================================================
+# 4) PORTFÖY GÜNCEL DEĞER
+# =====================================================
+latest_prices = prices.iloc[-1]
 
-# -----------------------------
-# PORTFÖY DEĞERİ
-# -----------------------------
-portfolio_value = (positions * prices).sum(axis=1)
-portfolio_value = portfolio_value[portfolio_value > 0]
+current_value = 0
+for _, row in df.iterrows():
+    sym = row["Symbol"]
+    qty = row["Quantity"]
+    current_value += qty * latest_prices[sym]
 
-current_value = float(portfolio_value.iloc[-1])
+total_return_pct = (current_value - total_invested) / total_invested * 100
 
-# -----------------------------
-# TOPLAM YATIRIM (SADECE ALIM)
-# -----------------------------
-invested = float(
-    (df[df["Quantity"] > 0]["Quantity"] * df["Price"]).sum()
-)
+# =====================================================
+# 5) ZAMAN SERİSİ (PORTFÖY DEĞERİ)
+# =====================================================
+portfolio_ts = pd.DataFrame(index=prices.index)
+portfolio_ts["Value"] = 0.0
 
-# -----------------------------
-# GETİRİ
-# -----------------------------
-total_return_pct = (current_value - invested) / invested * 100
+for _, row in df.iterrows():
+    sym = row["Symbol"]
+    qty = row["Quantity"]
+    portfolio_ts["Value"] += prices[sym] * qty
 
-st.metric("Toplam Portföy Getirisi (%)", f"{total_return_pct:.2f}%")
-st.write(f"💰 Toplam Yatırılan: {invested:,.2f} $")
-st.write(f"📈 Güncel Değer: {current_value:,.2f} $")
+# =====================================================
+# 6) UI
+# =====================================================
+st.title("📈 Portfolio Performance (Cash Ignored)")
 
-# -----------------------------
-# GRAFİK (SADE)
-# -----------------------------
+col1, col2, col3 = st.columns(3)
+col1.metric("Toplam Yatırım ($)", f"{total_invested:,.2f}")
+col2.metric("Güncel Değer ($)", f"{current_value:,.2f}")
+col3.metric("Toplam Getiri (%)", f"{total_return_pct:.2f}%")
+
 fig = go.Figure()
-fig.add_trace(go.Scatter(
-    x=portfolio_value.index,
-    y=portfolio_value,
-    mode="lines",
-    name="Portföy Değeri"
-))
+fig.add_trace(
+    go.Scatter(
+        x=portfolio_ts.index,
+        y=portfolio_ts["Value"],
+        mode="lines",
+        name="Portfolio Value"
+    )
+)
 
 fig.update_layout(
-    template="plotly_dark",
-    height=600
+    title="Portföy Değeri (Zaman İçinde)",
+    xaxis_title="Tarih",
+    yaxis_title="USD",
+    template="plotly_dark"
 )
 
-st.plotly_chart(fig, use_container_width=True_
+st.plotly_chart(fig, use_container_width=True)
