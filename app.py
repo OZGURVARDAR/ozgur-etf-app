@@ -6,222 +6,175 @@ from plotly.subplots import make_subplots
 import numpy as np
 
 # -------------------------------------------------
-# 1. AYARLAR
+# 1. AYARLAR & SAYFA YAPISI
 # -------------------------------------------------
-st.set_page_config(page_title="Özgür Portföy & IBKR TWR", layout="wide", page_icon="📈")
-st.sidebar.header("Ayarlar")
-show_spy = st.sidebar.toggle("SPY (Benchmark) Göster", True)
+st.set_page_config(page_title="Özgür Portföy Terminal v4", layout="wide", page_icon="📊")
 
-# Google Sheet ID (Senin verdiğin ID)
+st.sidebar.header("🛠 Grafik & Strateji")
+chart_mode = st.sidebar.selectbox("Grafik Tipi", ["Çizgi Grafik", "Mum Grafiği", "Heikin Ashi"])
+show_benchmark = st.sidebar.toggle("SPY Karşılaştır", True)
+
+# Google Sheet Verisi
 SHEET_ID = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
 # -------------------------------------------------
-# 2. VERİ ÇEKME VE TEMİZLEME
+# 2. VERİ YÜKLEME VE TEMİZLEME
 # -------------------------------------------------
 @st.cache_data(ttl=300)
-def get_data():
-    try:
-        df = pd.read_csv(SHEET_URL)
-        df["Date"] = pd.to_datetime(df["Date"])
-        
-        # Sayısal sütunları zorla, hataları 0 yap
-        for col in ["Quantity", "Price", "Cash"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-        
-        # Symbol boşluklarını temizle ve büyüt
-        df["Symbol"] = df["Symbol"].astype(str).str.upper().str.strip()
-        return df
-    except Exception as e:
-        st.error(f"Veri okuma hatası: {e}")
-        return pd.DataFrame()
+def load_and_clean_data():
+    df = pd.read_csv(URL)
+    df["Date"] = pd.to_datetime(df["Date"])
+    for col in ["Quantity", "Price", "Cash"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    df["Symbol"] = df["Symbol"].str.strip().str.upper()
+    return df.sort_values("Date")
 
-df_trades = get_data()
-
-if df_trades.empty:
-    st.warning("Veri bulunamadı. Lütfen Google Sheet bağlantısını kontrol et.")
-    st.stop()
+df_trades = load_and_clean_data()
+milat_date = df_trades["Date"].min()
 
 # -------------------------------------------------
-# 3. PORTFÖY MOTORU (CORE ENGINE)
+# 3. PORTFÖY HESAPLAMA MOTORU (Doğru Getiri Mantığı)
 # -------------------------------------------------
-def calculate_portfolio(trades):
-    # A. Tarih Aralığı ve Semboller
-    start_date = trades["Date"].min()
-    end_date = pd.Timestamp.today() # Veya trades["Date"].max()
+def calculate_performance(trades):
+    symbols = sorted([s for s in trades["Symbol"].unique() if s != "CASH"])
     
-    # "CASH" sembolü hariç hisse senetleri
-    symbols = trades.loc[trades["Symbol"] != "CASH", "Symbol"].unique().tolist()
-    
-    # B. Piyasa Verilerini İndir (SPY Dahil)
-    tickers = symbols + ["SPY"]
-    market_data = yf.download(tickers, start=start_date, end=end_date, progress=False)["Close"]
-    
-    # Tek hisse varsa Series gelir, DataFrame'e çevir
-    if isinstance(market_data, pd.Series):
-        market_data = market_data.to_frame()
-
-    # Eğer veri içinde boşluklar varsa (Haftasonu değil, işlem günü eksikliği) doldur
+    # Piyasa verilerini çek (SPY dahil)
+    market_data = yf.download(symbols + ["SPY"], start=milat_date, progress=False)["Close"]
+    if isinstance(market_data, pd.Series): market_data = market_data.to_frame()
     market_data = market_data.ffill()
-
-    # C. Günlük Hesaplama Döngüsü
-    # Market verisinin olduğu her gün için hesap yapacağız
+    
     all_dates = market_data.index
+    perf_data = []
     
-    performance_rows = []
+    # Takip değişkenleri
+    current_holdings = {sym: 0.0 for sym in symbols}
+    cash_in_hand = 0.0      # Portföydeki nakit (Alım satımlarla değişir)
+    invested_capital = 0.0  # Cebimizden çıkan toplam para (External Flow)
     
-    # Kümülatif tutucular
-    cum_holdings = {sym: 0.0 for sym in symbols} # Eldeki hisse adetleri
-    wallet_cash = 0.0 # Cüzdandaki nakit (Boşta duran para)
-    
-    for current_date in all_dates:
-        # O gün (veya öncesinde hafta sonu) yapılan işlemleri bul
-        # Not: Basitlik için o günkü işlemleri alıyoruz. 
-        # (Daha hassas modda: Bir önceki kapanıştan bugüne kadar olanları alabiliriz)
-        daily_activity = trades[trades["Date"] == current_date]
+    for dt in all_dates:
+        # O günkü işlemler
+        daily_trades = trades[trades["Date"] == dt]
         
-        # 1. External Flow (Sadece "CASH" sembolü olan giriş/çıkışlar)
-        # Bu para, hesaplamada 'Sermaye Artırımı' olarak kabul edilir, KAR değildir.
-        external_flow = daily_activity.loc[daily_activity["Symbol"] == "CASH", "Cash"].sum()
+        day_external_flow = 0.0 # O gün dışarıdan eklenen nakit
         
-        # 2. İşlemleri İşle (Internal Flow)
-        for _, row in daily_activity.iterrows():
-            sym = row["Symbol"]
-            qty = row["Quantity"]
-            cash_change = row["Cash"]
-            
-            # Cüzdan bakiyesini her işlemde güncelle (Alım yapınca para azalır, deposit yapınca artar)
-            wallet_cash += cash_change
-            
-            # Hisse adedini güncelle (CASH değilse)
-            if sym != "CASH" and sym in cum_holdings:
-                cum_holdings[sym] += qty
+        for _, row in daily_trades.iterrows():
+            if row["Symbol"] == "CASH":
+                # Dışarıdan para girişi (Deposit)
+                cash_in_hand += row["Cash"]
+                day_external_flow += row["Cash"]
+                invested_capital += row["Cash"]
+            else:
+                # Hisse işlemi
+                current_holdings[row["Symbol"]] += row["Quantity"]
+                cash_in_hand += row["Cash"] # (Qty * Price + Komisyon zaten Excel'inde Cash sütununda)
+
+        # Portföy Değeri (Mark-to-Market)
+        market_value = sum(current_holdings[s] * market_data.loc[dt, s] for s in symbols if s in market_data.columns)
+        total_nav = market_value + cash_in_hand
         
-        # 3. Gün Sonu Değerleme (Mark-to-Market)
-        equity_value = 0.0
-        for sym in symbols:
-            if sym in market_data.columns:
-                price = market_data.loc[current_date, sym]
-                # Fiyat NaN ise (o gün işlem yoksa) 0 sayma, önceki fiyatı ffill yaptık zaten
-                if pd.notna(price):
-                    equity_value += cum_holdings[sym] * price
-        
-        total_nav = equity_value + wallet_cash
-        
-        performance_rows.append({
-            "Date": current_date,
+        perf_data.append({
+            "Date": dt,
             "NAV": total_nav,
-            "External_Flow": external_flow,
-            "SPY_Price": market_data.loc[current_date, "SPY"] if "SPY" in market_data.columns else np.nan
+            "External_Flow": day_external_flow,
+            "Invested_Capital": invested_capital,
+            "SPY_Price": market_data.loc[dt, "SPY"]
         })
-        
-    return pd.DataFrame(performance_rows).set_index("Date")
 
-# Hesaplamayı Başlat
-df_perf = calculate_portfolio(df_trades)
+    perf_df = pd.DataFrame(perf_data).set_index("Date")
+    return perf_df
+
+perf_df = calculate_performance(df_trades)
 
 # -------------------------------------------------
-# 4. TWR (TIME-WEIGHTED RETURN) HESAPLAMASI
+# 4. TWR (TIME-WEIGHTED RETURN) HESAPLAMA
 # -------------------------------------------------
-# Burası sihirli kısım. External Flow'ları formülden düşüyoruz.
+# Nakit girişlerinden arındırılmış günlük yüzde değişim
+perf_df["Prev_NAV"] = perf_df["NAV"].shift(1)
+perf_df["Daily_Return"] = 0.0
 
-# Önceki günün verilerini al
-df_perf["Prev_NAV"] = df_perf["NAV"].shift(1)
-df_perf["Prev_NAV"].iloc[0] = 0 # İlk gün öncesi 0
-
-# Günlük Getiri Formülü: 
-# (Bugünkü NAV - Dünkü NAV - Bugün Giren Para) / (Dünkü NAV + Bugün Giren Para)
-# Not: "Bugün Giren Para" paydaya eklenir çünkü o parayla gün içinde işlem yapmış olabilirsin (Basit yaklaşım).
-# Veya gün sonu girdiyse paydaya eklenmez. IBKR genelde "Modified Dietz" kullanır.
-# Biz en temiz yöntem olan basit TWR kullanalım:
-
-df_perf["Daily_Return"] = 0.0
-
-for i in range(1, len(df_perf)):
-    nav_end = df_perf["NAV"].iloc[i]
-    nav_start = df_perf["Prev_NAV"].iloc[i]
-    flow = df_perf["External_Flow"].iloc[i]
+# Formül: (Bugünkü NAV - Eklenen Para - Dünkü NAV) / (Dünkü NAV + Eklenen Para)
+for i in range(1, len(perf_df)):
+    row = perf_df.iloc[i]
+    prev_nav = row["Prev_NAV"]
+    flow = row["External_Flow"]
     
-    # Payda: Sermaye tabanı. 
-    # Eğer gün ortasında para girdiyse, kâra etkisi olmaması için sermayeye ekliyoruz.
-    denominator = nav_start + flow
-    
-    if denominator != 0:
-        # Pay: Oluşan değer farkından, cebimizden koyduğumuz parayı (flow) düşüyoruz.
-        gain_loss = nav_end - (nav_start + flow)
-        df_perf.iloc[i, df_perf.columns.get_loc("Daily_Return")] = gain_loss / denominator
-    else:
-        df_perf.iloc[i, df_perf.columns.get_loc("Daily_Return")] = 0.0
+    # Payda: Önceki bakiye + yeni eklenen para (Sermaye tabanı)
+    denominator = prev_nav + flow
+    if denominator > 0:
+        # Net kâr = Bugünkü değer - (Dünkü değer + bugün cebimden koyduğum)
+        net_profit = row["NAV"] - (prev_nav + flow)
+        perf_df.iloc[i, perf_df.columns.get_loc("Daily_Return")] = net_profit / denominator
 
-# Kümülatif Getiri (Compound)
-df_perf["Portfolio_Cum_Pct"] = (1 + df_perf["Daily_Return"]).cumprod() - 1
-df_perf["Portfolio_Cum_Pct"] *= 100
-
-# SPY Normalize Etme
-spy_start = df_perf["SPY_Price"].iloc[0]
-df_perf["SPY_Cum_Pct"] = ((df_perf["SPY_Price"] / spy_start) - 1) * 100
+# Kümülatif Getiri
+perf_df["Port_Cum_Return"] = (1 + perf_df["Daily_Return"]).cumprod() - 1
+perf_df["SPY_Cum_Return"] = (perf_df["SPY_Price"] / perf_df["SPY_Price"].iloc[0]) - 1
 
 # -------------------------------------------------
-# 5. GÖRSELLEŞTİRME (IBKR TARZI)
+# 5. GRAFİK HAZIRLIĞI (OHLC & HEIKIN ASHI)
 # -------------------------------------------------
+# NAV bazlı Mum grafiği için OHLC oluşturma
+perf_df["Open"] = perf_df["NAV"].shift(1).fillna(perf_df["NAV"])
+perf_df["High"] = perf_df[["Open", "NAV"]].max(axis=1)
+perf_df["Low"] = perf_df[["Open", "NAV"]].min(axis=1)
+perf_df["Close"] = perf_df["NAV"]
 
-# Grafik verisindeki boşlukları (haftasonları) hesapla
-all_cal_days = pd.date_range(start=df_perf.index.min(), end=df_perf.index.max())
-trading_days = df_perf.index
-missing_dates = all_cal_days.difference(trading_days).strftime("%Y-%m-%d").tolist()
+if chart_mode == "Heikin Ashi":
+    # HA Hesaplama
+    ha_close = (perf_df["Open"] + perf_df["High"] + perf_df["Low"] + perf_df["Close"]) / 4
+    ha_open = ha_close.copy()
+    for i in range(1, len(perf_df)):
+        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
+    ha_high = perf_df[["High", "Open", "Close"]].max(axis=1) # Basitleştirilmiş
+    ha_low = perf_df[["Low", "Open", "Close"]].min(axis=1)   # Basitleştirilmiş
+    perf_df["Open"], perf_df["High"], perf_df["Low"], perf_df["Close"] = ha_open, ha_high, ha_low, ha_close
 
-# Sonuç Kartları
-last_row = df_perf.iloc[-1]
-port_return = last_row["Portfolio_Cum_Pct"]
-spy_return = last_row["SPY_Cum_Pct"]
-alpha = port_return - spy_return
-curr_nav = last_row["NAV"]
+# -------------------------------------------------
+# 6. GÖRSELLEŞTİRME
+# -------------------------------------------------
+# Tatil günlerini x ekseninden kaldır
+all_days = pd.date_range(perf_df.index.min(), perf_df.index.max())
+trading_days = perf_df.index
+missing_dates = all_days.difference(trading_days).strftime("%Y-%m-%d").tolist()
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Toplam Varlık (NAV)", f"${curr_nav:,.2f}")
-col2.metric("Portföy Getirisi (TWR)", f"%{port_return:.2f}", delta_color="normal")
-col3.metric("SPY Getirisi", f"%{spy_return:.2f}", delta_color="normal")
-col4.metric("Alpha (Fark)", f"%{alpha:.2f}", delta=f"{alpha:.2f}")
+fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
 
-# Grafik
-fig = go.Figure()
-
-# Portföy Alanı (Dolu Grafik - Area)
-fig.add_trace(go.Scatter(
-    x=df_perf.index,
-    y=df_perf["Portfolio_Cum_Pct"],
-    mode='lines',
-    name='Portföy TWR',
-    line=dict(color='#00C805', width=2),
-    fill='tozeroy', # IBKR tarzı altı dolu
-    fillcolor='rgba(0, 200, 5, 0.1)' # Yeşil saydam
-))
-
-# Benchmark (Çizgi)
-if show_spy:
+# Üst Panel: Portföy Değeri (Seçilen tipte)
+if chart_mode in ["Mum Grafiği", "Heikin Ashi"]:
+    fig.add_trace(go.Candlestick(
+        x=perf_df.index, open=perf_df["Open"], high=perf_df["High"],
+        low=perf_df["Low"], close=perf_df["Close"], name="NAV (USD)"
+    ), row=1, col=1)
+else:
     fig.add_trace(go.Scatter(
-        x=df_perf.index,
-        y=df_perf["SPY_Cum_Pct"],
-        mode='lines',
-        name='S&P 500 (SPY)',
-        line=dict(color='#5b33e8', width=2) # IBKR moru
-    ))
+        x=perf_df.index, y=perf_df["NAV"], mode='lines', name="NAV (USD)", line=dict(color='#00C805')
+    ), row=1, col=1)
 
-fig.update_layout(
-    title="Kümülatif Getiri Karşılaştırması (%)",
-    template="plotly_white",
-    hovermode="x unified",
-    xaxis_rangeslider_visible=False,
-    height=600,
-    yaxis=dict(tickformat=".2f", title="Getiri (%)"),
-    xaxis=dict(
-        rangebreaks=[dict(values=missing_dates)] # Boşlukları sil
-    )
-)
+# Alt Panel: Getiri Karşılaştırması (%)
+fig.add_trace(go.Scatter(
+    x=perf_df.index, y=perf_df["Port_Cum_Return"]*100,
+    name="Portföy (%)", line=dict(color='#00C805', width=2), fill='tozeroy', fillcolor='rgba(0, 200, 5, 0.1)'
+), row=2, col=1)
+
+if show_benchmark:
+    fig.add_trace(go.Scatter(
+        x=perf_df.index, y=perf_df["SPY_Cum_Return"]*100,
+        name="SPY (%)", line=dict(color='orange', dash='dot')
+    ), row=2, col=1)
+
+# Layout Ayarları
+fig.update_layout(height=850, template="plotly_dark", xaxis_rangeslider_visible=False, hovermode="x unified")
+fig.update_xaxes(rangebreaks=[dict(values=missing_dates)])
+
+# Metrikler
+total_gain_pct = perf_df["Port_Cum_Return"].iloc[-1] * 100
+spy_gain_pct = perf_df["SPY_Cum_Return"].iloc[-1] * 100
+
+st.title("📈 Özgür ETF Portföy Analizi")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Güncel NAV", f"${perf_df['NAV'].iloc[-1]:,.2f}")
+c2.metric("Net Getiri (%)", f"%{total_gain_pct:.2f}")
+c3.metric("SPY Getiri (%)", f"%{spy_gain_pct:.2f}")
+c4.metric("Alpha", f"%{(total_gain_pct - spy_gain_pct):.2f}")
 
 st.plotly_chart(fig, use_container_width=True)
-
-# Debug Tablosu (Gizli)
-with st.expander("Hesaplama Detaylarını İncele"):
-    st.dataframe(df_perf[["NAV", "External_Flow", "Prev_NAV", "Daily_Return", "Portfolio_Cum_Pct"]])
