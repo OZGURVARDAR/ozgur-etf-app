@@ -17,11 +17,8 @@ URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 def load_data():
     df = pd.read_csv(URL)
     df["Date"] = pd.to_datetime(df["Date"])
-
-    # >>> EN KRİTİK SATIRLAR <<<
-    for col in ["Quantity", "Price", "Cash"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
+    for c in ["Quantity", "Price", "Cash"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     return df
 
 df = load_data()
@@ -33,19 +30,23 @@ start = df["Date"].min()
 end = pd.Timestamp.today()
 
 # ===============================
-# SYMBOLLER
+# SEMBOLLER
 # ===============================
 symbols = df.loc[df["Symbol"] != "CASH", "Symbol"].unique().tolist()
 
 # ===============================
-# FİYATLAR
+# FİYATLAR (HATA KIRILMAZ)
 # ===============================
-prices = yf.download(symbols + ["SPY"], start=start, end=end, progress=False)
+raw = yf.download(symbols + ["SPY"], start=start, end=end, progress=False)
 
-if isinstance(prices.columns, pd.MultiIndex):
-    prices = prices["Adj Close"]
+# ---- Adj Close varsa al, yoksa Close ----
+if isinstance(raw.columns, pd.MultiIndex):
+    if "Adj Close" in raw.columns.levels[0]:
+        prices = raw["Adj Close"]
+    else:
+        prices = raw["Close"]
 else:
-    prices = prices.rename(columns={"Adj Close": prices.columns[0]})
+    prices = raw["Adj Close"] if "Adj Close" in raw.columns else raw["Close"]
 
 prices = prices.ffill()
 
@@ -78,28 +79,27 @@ total_value = asset_value + cash_balance
 total_value = total_value[total_value > 0]
 
 # ===============================
-# TWR HESABI (GERÇEK GETİRİ)
+# TWR (GERÇEK GETİRİ)
 # ===============================
-twr_returns = []
-prev_value = None
+returns = []
+prev = None
 
-for date in total_value.index:
-    V = total_value.loc[date]
-    CF = cash_flows.loc[date]
+for d in total_value.index:
+    V = total_value.loc[d]
+    CF = cash_flows.loc[d]
 
-    if prev_value is not None and prev_value != 0:
-        r = (V - CF) / prev_value - 1
-        twr_returns.append(r)
+    if prev is not None and prev != 0:
+        returns.append((V - CF) / prev - 1)
 
-    prev_value = V
+    prev = V
 
-twr = (pd.Series(twr_returns) + 1).prod() - 1
+twr = (pd.Series(returns) + 1).prod() - 1
 
 # ===============================
-# SPY TWR
+# SPY
 # ===============================
 spy = prices["SPY"].loc[total_value.index]
-spy = spy / spy.iloc[0] - 1
+spy_ret = spy / spy.iloc[0] - 1
 
 # ===============================
 # GRAFİK
@@ -112,18 +112,14 @@ fig = make_subplots(
 )
 
 fig.add_trace(
-    go.Scatter(
-        x=total_value.index,
-        y=total_value,
-        name="Portföy Değeri"
-    ),
+    go.Scatter(x=total_value.index, y=total_value, name="Portföy Değeri"),
     row=1, col=1
 )
 
 fig.add_trace(
     go.Scatter(
-        x=spy.index,
-        y=spy * 100,
+        x=spy_ret.index,
+        y=spy_ret * 100,
         name="SPY (%)",
         line=dict(dash="dash")
     ),
@@ -141,4 +137,4 @@ fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 st.plotly_chart(fig, use_container_width=True)
 
 st.metric("Portföy TWR (%)", f"{twr*100:.2f}")
-st.metric("SPY (%)", f"{spy.iloc[-1]*100:.2f}")
+st.metric("SPY (%)", f"{spy_ret.iloc[-1]*100:.2f}")
