@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Özgür Portfolio Debug", layout="wide")
+st.set_page_config(page_title="Özgür Portfolio", layout="wide")
 
 # -------------------------------------------------
 # GOOGLE SHEET
@@ -15,39 +15,35 @@ CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 def load_trades():
     df = pd.read_csv(CSV_URL)
     df["Date"] = pd.to_datetime(df["Date"])
-    df = df[df["Symbol"] != "CASH"]  # CASH TAMAMEN YOK SAYILIYOR
     return df
 
 trades = load_trades()
 
 # -------------------------------------------------
-# BASIC CONTROLS
+# BASIC CHECK
 # -------------------------------------------------
 symbols = trades["Symbol"].unique().tolist()
 start_date = trades["Date"].min()
 
 # -------------------------------------------------
-# PRICE DATA (NET VE SAĞLAM)
+# PRICE DATA (SAĞLAM YOL)
 # -------------------------------------------------
-price_data = yf.download(
+prices = yf.download(
     tickers=symbols,
     start=start_date,
     auto_adjust=True,
     progress=False
-)
-
-prices = price_data["Close"]
+)["Close"]
 
 # -------------------------------------------------
-# POZİSYON HESABI
+# POZİSYONLAR
 # -------------------------------------------------
-dates = prices.index
-positions = pd.DataFrame(0.0, index=dates, columns=symbols)
+positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
 
 for sym in symbols:
-    sym_trades = trades[trades["Symbol"] == sym][["Date", "Quantity"]]
-    sym_trades = sym_trades.set_index("Date").reindex(dates, fill_value=0)
-    positions[sym] = sym_trades["Quantity"].cumsum()
+    t = trades[trades["Symbol"] == sym][["Date", "Quantity"]]
+    t = t.set_index("Date").reindex(prices.index, fill_value=0)
+    positions[sym] = t["Quantity"].cumsum()
 
 # -------------------------------------------------
 # PORTFÖY DEĞERİ
@@ -60,25 +56,29 @@ portfolio_value = portfolio_value[portfolio_value > 0]
 # -------------------------------------------------
 initial_value = portfolio_value.iloc[0]
 current_value = portfolio_value.iloc[-1]
-
 total_return_pct = (current_value / initial_value - 1) * 100
 
 # -------------------------------------------------
-# UI – NET VE AÇIK
+# UI
 # -------------------------------------------------
 st.metric(
-    label="📈 Toplam Portföy Getirisi (%)",
-    value=f"{total_return_pct:.2f}%"
+    "📈 Toplam Portföy Getirisi (%)",
+    f"{total_return_pct:.2f}%"
 )
 
-# -------------------------------------------------
-# GRAFİK (SADECE MUM)
-# -------------------------------------------------
 fig = go.Figure()
-
 fig.add_trace(
-    go.Candlestick(
+    go.Scatter(
         x=portfolio_value.index,
-        open=portfolio_value.shift(1),
-        high=portfolio_value.rolling(2).max(),
-        low=portfolio_value.rolling(_
+        y=portfolio_value,
+        name="Portföy Değeri"
+    )
+)
+
+fig.update_layout(
+    template="plotly_dark",
+    height=600,
+    xaxis_rangeslider_visible=False
+)
+
+st.plotly_chart(fig, use_container_width=True)
