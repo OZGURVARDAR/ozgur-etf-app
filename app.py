@@ -1,117 +1,144 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(layout="wide")
-st.title("📊 Portfolio Performance – Time Weighted Return (TWR)")
+st.set_page_config(layout="wide", page_title="Özgür ETF – TWR")
 
-# =========================
-# 1️⃣ GOOGLE SHEETS OKU
-# =========================
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
+# ===============================
+# GOOGLE SHEETS
+# ===============================
+SHEET_ID = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
+URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
-df = pd.read_csv(SHEET_URL)
-df["Date"] = pd.to_datetime(df["Date"])
-df = df.sort_values("Date")
+@st.cache_data(ttl=300)
+def load_data():
+    df = pd.read_csv(URL)
+    df["Date"] = pd.to_datetime(df["Date"])
 
-# =========================
-# 2️⃣ SEMBOLLER
-# =========================
-symbols = sorted(df.loc[df["Symbol"] != "CASH", "Symbol"].unique())
+    # >>> EN KRİTİK SATIRLAR <<<
+    for col in ["Quantity", "Price", "Cash"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
+    return df
+
+df = load_data()
+
+# ===============================
+# TARİHLER
+# ===============================
 start = df["Date"].min()
-end = df["Date"].max()
+end = pd.Timestamp.today()
 
-# =========================
-# 3️⃣ FİYATLAR (ROBUST)
-# =========================
-raw_prices = yf.download(
-    symbols,
-    start=start,
-    end=end,
-    progress=False,
-    auto_adjust=False
-)
+# ===============================
+# SYMBOLLER
+# ===============================
+symbols = df.loc[df["Symbol"] != "CASH", "Symbol"].unique().tolist()
 
-if isinstance(raw_prices.columns, pd.MultiIndex):
-    prices = raw_prices["Adj Close"] if "Adj Close" in raw_prices.columns.levels[0] else raw_prices["Close"]
+# ===============================
+# FİYATLAR
+# ===============================
+prices = yf.download(symbols + ["SPY"], start=start, end=end, progress=False)
+
+if isinstance(prices.columns, pd.MultiIndex):
+    prices = prices["Adj Close"]
 else:
-    prices = raw_prices.to_frame(name=symbols[0])
+    prices = prices.rename(columns={"Adj Close": prices.columns[0]})
 
 prices = prices.ffill()
 
-# =========================
-# 4️⃣ GÜNLÜK POZİSYONLAR
-# =========================
-positions = (
-    df[df["Symbol"] != "CASH"]
-    .pivot_table(index="Date", columns="Symbol", values="Quantity", aggfunc="sum")
-    .fillna(0)
-    .cumsum()
-)
+# ===============================
+# POZİSYONLAR
+# ===============================
+positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
 
-positions = positions.reindex(prices.index).ffill().fillna(0)
+for s in symbols:
+    qty = (
+        df[df["Symbol"] == s]
+        .set_index("Date")["Quantity"]
+        .reindex(prices.index, fill_value=0)
+    )
+    positions[s] = qty.cumsum()
 
-# =========================
-# 5️⃣ PORTFÖY DEĞERİ
-# =========================
-portfolio_value = (positions * prices).sum(axis=1)
+# ===============================
+# PORTFÖY DEĞERİ
+# ===============================
+asset_value = (positions * prices[symbols]).sum(axis=1)
 
-# =========================
-# 6️⃣ EXTERNAL CASH FLOWS
-# =========================
 cash_flows = (
-    df.groupby("Date")["Cash"].sum()
-    .reindex(portfolio_value.index)
-    .fillna(0)
+    df.set_index("Date")["Cash"]
+    .reindex(prices.index, fill_value=0)
 )
 
-# =========================
-# 7️⃣ TWR HESABI
-# =========================
-twr_returns = []
+cash_balance = cash_flows.cumsum()
 
+total_value = asset_value + cash_balance
+total_value = total_value[total_value > 0]
+
+# ===============================
+# TWR HESABI (GERÇEK GETİRİ)
+# ===============================
+twr_returns = []
 prev_value = None
 
-for date in portfolio_value.index:
-    V = portfolio_value.loc[date]
+for date in total_value.index:
+    V = total_value.loc[date]
     CF = cash_flows.loc[date]
 
-    if prev_value is None:
-        prev_value = V
-        continue
-
-    if prev_value != 0:
+    if prev_value is not None and prev_value != 0:
         r = (V - CF) / prev_value - 1
         twr_returns.append(r)
 
     prev_value = V
 
-twr = np.prod([1 + r for r in twr_returns]) - 1
+twr = (pd.Series(twr_returns) + 1).prod() - 1
 
-# =========================
-# 8️⃣ BENCHMARK (SPY)
-# =========================
-spy = yf.download("SPY", start=start, end=end, progress=False)["Adj Close"].ffill()
-spy_return = spy.iloc[-1] / spy.iloc[0] - 1
+# ===============================
+# SPY TWR
+# ===============================
+spy = prices["SPY"].loc[total_value.index]
+spy = spy / spy.iloc[0] - 1
 
-# =========================
-# 9️⃣ GRAFİK
-# =========================
-st.subheader("📈 Performance Comparison")
+# ===============================
+# GRAFİK
+# ===============================
+fig = make_subplots(
+    rows=2,
+    cols=1,
+    shared_xaxes=True,
+    row_heights=[0.7, 0.3]
+)
 
-perf = pd.DataFrame({
-    "Portfolio (TWR)": (1 + pd.Series(twr_returns, index=portfolio_value.index[1:])).cumprod(),
-    "SPY": (spy / spy.iloc[0])
-})
+fig.add_trace(
+    go.Scatter(
+        x=total_value.index,
+        y=total_value,
+        name="Portföy Değeri"
+    ),
+    row=1, col=1
+)
 
-st.line_chart(perf)
+fig.add_trace(
+    go.Scatter(
+        x=spy.index,
+        y=spy * 100,
+        name="SPY (%)",
+        line=dict(dash="dash")
+    ),
+    row=2, col=1
+)
 
-# =========================
-# 🔟 SONUÇLAR
-# =========================
-st.subheader("📌 Summary")
+fig.update_layout(
+    template="plotly_dark",
+    height=900,
+    xaxis_rangeslider_visible=False
+)
 
-st.metric("Portfolio TWR", f"%{twr*100:.2f}")
-st.metric("SPY Return", f"%{spy_return*100:.2f}")
+fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.metric("Portföy TWR (%)", f"{twr*100:.2f}")
+st.metric("SPY (%)", f"{spy.iloc[-1]*100:.2f}")
