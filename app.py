@@ -20,13 +20,13 @@ def load_trades():
 trades = load_trades()
 
 # -------------------------------------------------
-# BASIC CHECK
+# BASIC
 # -------------------------------------------------
 symbols = trades["Symbol"].unique().tolist()
 start_date = trades["Date"].min()
 
 # -------------------------------------------------
-# PRICE DATA (SAĞLAM YOL)
+# PRICE DATA
 # -------------------------------------------------
 prices = yf.download(
     tickers=symbols,
@@ -52,11 +52,18 @@ portfolio_value = (positions * prices).sum(axis=1)
 portfolio_value = portfolio_value[portfolio_value > 0]
 
 # -------------------------------------------------
-# GERÇEK GETİRİ (%)
+# GERÇEK YATIRILAN PARA (COST BASIS)
 # -------------------------------------------------
-initial_value = portfolio_value.iloc[0]
+trades["TradeValue"] = trades["Quantity"] * trades["Price"]
+
+# sadece ALIMLAR maliyettir
+invested_capital = trades[trades["Quantity"] > 0]["TradeValue"].sum()
+
+# -------------------------------------------------
+# GERÇEK GETİRİ
+# -------------------------------------------------
 current_value = portfolio_value.iloc[-1]
-total_return_pct = (current_value / initial_value - 1) * 100
+total_return_pct = (current_value - invested_capital) / invested_capital * 100
 
 # -------------------------------------------------
 # UI
