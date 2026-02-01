@@ -12,7 +12,10 @@ show_ema20 = st.sidebar.checkbox("EMA 20 Göster", value=True)
 ema20_val = st.sidebar.number_input("EMA 1 Periyot", value=20, min_value=1)
 
 show_ema_custom = st.sidebar.checkbox("Custom EMA Göster", value=True)
-ema_custom_val = st.sidebar.number_input("EMA 2 Periyot (Örn: 50 veya 100)", value=50, min_value=1)
+ema_custom_val = st.sidebar.number_input("EMA 2 Periyot", value=50, min_value=1)
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Trend Çizgisi İçin:** Grafiğin sağ üstündeki 'Draw Line' (Çizgi simgesi) butonuna bas. Çizimi bitirmek için çift tıkla.")
 
 st.title("📊 Özgür ETF - Teknik Analiz Terminali")
 
@@ -32,7 +35,6 @@ try:
     symbols = df_trades['Symbol'].unique().tolist()
     prices_ohlc = yf.download(symbols, start="2025-11-01", interval="1d")
     
-    # HESAPLAMA
     portfolio_ohlc = pd.DataFrame(index=prices_ohlc.index)
     for col in ['Open', 'High', 'Low', 'Close']:
         portfolio_ohlc[col] = 0.0
@@ -51,7 +53,6 @@ try:
     # 2. GRAFİK OLUŞTURMA
     fig = go.Figure()
 
-    # Mum Grafiği
     fig.add_trace(go.Candlestick(
         x=portfolio_ohlc.index,
         open=portfolio_ohlc['Open'], high=portfolio_ohlc['High'],
@@ -59,7 +60,6 @@ try:
         name="Portföy"
     ))
 
-    # EMA Çizgileri (Sadece checkbox işaretliyse görünür)
     if show_ema20:
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['EMA20'], 
                                  line=dict(color='#2962ff', width=1.5), name=f'EMA {ema20_val}'))
@@ -68,7 +68,6 @@ try:
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['EMA_Custom'], 
                                  line=dict(color='#ff9800', width=1.5), name=f'EMA {ema_custom_val}'))
 
-    # Grafik Düzenlemeleri (Versiyon 1'deki butonları koruyoruz)
     fig.update_xaxes(
         type='date',
         gridcolor="#2a2e39",
@@ -92,10 +91,22 @@ try:
         yaxis=dict(side="right", gridcolor="#2a2e39", tickformat="$,.0f"),
         paper_bgcolor='#131722', plot_bgcolor='#131722',
         margin=dict(l=10, r=50, t=50, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        # Çizim modu için gerekli ayar
+        dragmode='drawline',
+        newshape=dict(line_color='#2962ff', line_width=2)
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    # --- KONFİGÜRASYON (TREND ÇİZGİSİ ARAÇLARI) ---
+    st.plotly_chart(fig, use_container_width=True, config={
+        'scrollZoom': True,
+        'displayModeBar': True,
+        'modeBarButtonsToAdd': [
+            'drawline',
+            'drawrect',
+            'eraseshape'
+        ]
+    })
 
 except Exception as e:
     st.error(f"Hata: {e}")
