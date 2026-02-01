@@ -8,6 +8,9 @@ st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 
 # --- SOL PANEL (AYARLAR) ---
 st.sidebar.header("🛠 Grafik Ayarları")
+chart_type = st.sidebar.selectbox("Grafik Tipi", ["Mum Grafiği", "Heikin Ashi", "Çizgi Grafik"])
+
+st.sidebar.markdown("---")
 show_ema20 = st.sidebar.checkbox("EMA 20 Göster", value=True)
 ema20_val = st.sidebar.number_input("EMA 1 Periyot", value=20, min_value=1)
 
@@ -15,7 +18,7 @@ show_ema_custom = st.sidebar.checkbox("Custom EMA Göster", value=True)
 ema_custom_val = st.sidebar.number_input("EMA 2 Periyot", value=50, min_value=1)
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Trend Çizgisi İçin:** Grafiğin sağ üstündeki 'Draw Line' (Çizgi simgesi) butonuna bas. Çizimi bitirmek için çift tıkla.")
+st.sidebar.info("💡 **Trend Çizgisi:** Sağ üstteki simgelerle çizim yapabilirsin.")
 
 st.title("📊 Özgür ETF - Teknik Analiz Terminali")
 
@@ -46,6 +49,21 @@ try:
 
     portfolio_ohlc = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
 
+    # --- HEIKIN ASHI HESAPLAMA ---
+    if chart_type == "Heikin Ashi":
+        ha_close = (portfolio_ohlc['Open'] + portfolio_ohlc['High'] + portfolio_ohlc['Low'] + portfolio_ohlc['Close']) / 4
+        ha_open = portfolio_ohlc['Open'].copy()
+        for i in range(1, len(portfolio_ohlc)):
+            ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
+        ha_high = portfolio_ohlc[['High', 'Open', 'Close']].max(axis=1)
+        ha_low = portfolio_ohlc[['Low', 'Open', 'Close']].min(axis=1)
+        
+        display_df = pd.DataFrame({
+            'Open': ha_open, 'High': ha_high, 'Low': ha_low, 'Close': ha_close
+        }, index=portfolio_ohlc.index)
+    else:
+        display_df = portfolio_ohlc
+
     # EMA HESAPLAMALARI
     portfolio_ohlc['EMA20'] = portfolio_ohlc['Close'].ewm(span=ema20_val, adjust=False).mean()
     portfolio_ohlc['EMA_Custom'] = portfolio_ohlc['Close'].ewm(span=ema_custom_val, adjust=False).mean()
@@ -53,33 +71,32 @@ try:
     # 2. GRAFİK OLUŞTURMA
     fig = go.Figure()
 
-    fig.add_trace(go.Candlestick(
-        x=portfolio_ohlc.index,
-        open=portfolio_ohlc['Open'], high=portfolio_ohlc['High'],
-        low=portfolio_ohlc['Low'], close=portfolio_ohlc['Close'],
-        name="Portföy"
-    ))
+    if chart_type == "Çizgi Grafik":
+        fig.add_trace(go.Scatter(x=display_df.index, y=display_df['Close'], 
+                                 line=dict(color='#2962ff', width=2), name="Portföy Değeri"))
+    else:
+        fig.add_trace(go.Candlestick(
+            x=display_df.index, open=display_df['Open'], high=display_df['High'],
+            low=display_df['Low'], close=display_df['Close'], name="Portföy"
+        ))
 
+    # EMA'lar
     if show_ema20:
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['EMA20'], 
-                                 line=dict(color='#2962ff', width=1.5), name=f'EMA {ema20_val}'))
-    
+                                 line=dict(color='#2962ff', width=1, dash='dot'), name=f'EMA {ema20_val}'))
     if show_ema_custom:
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['EMA_Custom'], 
-                                 line=dict(color='#ff9800', width=1.5), name=f'EMA {ema_custom_val}'))
+                                 line=dict(color='#ff9800', width=1, dash='dot'), name=f'EMA {ema_custom_val}'))
 
+    # Düzenlemeler
     fig.update_xaxes(
-        type='date',
-        gridcolor="#2a2e39",
+        type='date', gridcolor="#2a2e39",
         rangebreaks=[dict(bounds=["sat", "mon"])],
         rangeselector=dict(
             buttons=list([
                 dict(count=5, label="5G", step="day", stepmode="backward"),
                 dict(count=1, label="1A", step="month", stepmode="backward"),
-                dict(count=3, label="3A", step="month", stepmode="backward"),
                 dict(count=6, label="6A", step="month", stepmode="backward"),
-                dict(count=1, label="YTD", step="year", stepmode="todate"),
-                dict(count=1, label="1Y", step="year", stepmode="backward"),
                 dict(step="all", label="Tümü")
             ]),
             bgcolor="#1e222d", activecolor="#2962ff"
@@ -91,22 +108,11 @@ try:
         yaxis=dict(side="right", gridcolor="#2a2e39", tickformat="$,.0f"),
         paper_bgcolor='#131722', plot_bgcolor='#131722',
         margin=dict(l=10, r=50, t=50, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        # Çizim modu için gerekli ayar
         dragmode='drawline',
         newshape=dict(line_color='#2962ff', line_width=2)
     )
 
-    # --- KONFİGÜRASYON (TREND ÇİZGİSİ ARAÇLARI) ---
-    st.plotly_chart(fig, use_container_width=True, config={
-        'scrollZoom': True,
-        'displayModeBar': True,
-        'modeBarButtonsToAdd': [
-            'drawline',
-            'drawrect',
-            'eraseshape'
-        ]
-    })
+    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline','eraseshape']})
 
 except Exception as e:
     st.error(f"Hata: {e}")
