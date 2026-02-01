@@ -1,91 +1,72 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import plotly.graph_objects as go
 
-st.set_page_config(page_title="Özgür Portfolio", layout="wide")
+st.set_page_config(layout="wide")
+st.title("📊 Portfolio Return Checker (Cash Ignored)")
 
-# -------------------------------------------------
-# GOOGLE SHEET
-# -------------------------------------------------
+# =========================
+# LOAD GOOGLE SHEETS
+# =========================
 SHEET_ID = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+SHEET_NAME = "Sheet1"
 
-@st.cache_data(ttl=300)
-def load_trades():
-    df = pd.read_csv(CSV_URL)
-    df["Date"] = pd.to_datetime(df["Date"])
-    return df
+url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
+df = pd.read_csv(url)
 
-trades = load_trades()
+# Clean
+df["Quantity"] = pd.to_numeric(df["Quantity"])
+df["Price"] = pd.to_numeric(df["Price"])
+df["Date"] = pd.to_datetime(df["Date"])
 
-# -------------------------------------------------
-# BASIC
-# -------------------------------------------------
-symbols = trades["Symbol"].unique().tolist()
-start_date = trades["Date"].min()
+# =========================
+# INVESTED CAPITAL
+# =========================
+df["Cost"] = df["Quantity"] * df["Price"]
+invested_capital = df["Cost"].sum()
 
-# -------------------------------------------------
-# PRICE DATA
-# -------------------------------------------------
+# =========================
+# CURRENT PRICES
+# =========================
+symbols = df["Symbol"].unique().tolist()
+
 prices = yf.download(
     tickers=symbols,
-    start=start_date,
+    period="5d",
+    group_by="ticker",
     auto_adjust=True,
     progress=False
-)["Close"]
+)
 
-# -------------------------------------------------
-# POZİSYONLAR
-# -------------------------------------------------
-positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
+def get_last_price(symbol):
+    if len(symbols) == 1:
+        return prices["Close"].iloc[-1]
+    return prices[symbol]["Close"].iloc[-1]
 
-for sym in symbols:
-    t = trades[trades["Symbol"] == sym][["Date", "Quantity"]]
-    t = t.set_index("Date").reindex(prices.index, fill_value=0)
-    positions[sym] = t["Quantity"].cumsum()
+# =========================
+# CURRENT VALUE
+# =========================
+current_value = 0
 
-# -------------------------------------------------
-# PORTFÖY DEĞERİ
-# -------------------------------------------------
-portfolio_value = (positions * prices).sum(axis=1)
-portfolio_value = portfolio_value[portfolio_value > 0]
+for _, row in df.iterrows():
+    last_price = get_last_price(row["Symbol"])
+    current_value += row["Quantity"] * last_price
 
-# -------------------------------------------------
-# GERÇEK YATIRILAN PARA (COST BASIS)
-# -------------------------------------------------
-trades["TradeValue"] = trades["Quantity"] * trades["Price"]
-
-# sadece ALIMLAR maliyettir
-invested_capital = trades[trades["Quantity"] > 0]["TradeValue"].sum()
-
-# -------------------------------------------------
-# GERÇEK GETİRİ
-# -------------------------------------------------
-current_value = portfolio_value.iloc[-1]
+# =========================
+# RETURN
+# =========================
 total_return_pct = (current_value - invested_capital) / invested_capital * 100
 
-# -------------------------------------------------
-# UI
-# -------------------------------------------------
+# =========================
+# DISPLAY
+# =========================
 st.metric(
-    "📈 Toplam Portföy Getirisi (%)",
-    f"{total_return_pct:.2f}%"
+    label="📈 Total Portfolio Return (%)",
+    value=f"{total_return_pct:.2f}%"
 )
 
-fig = go.Figure()
-fig.add_trace(
-    go.Scatter(
-        x=portfolio_value.index,
-        y=portfolio_value,
-        name="Portföy Değeri"
-    )
-)
+st.divider()
 
-fig.update_layout(
-    template="plotly_dark",
-    height=600,
-    xaxis_rangeslider_visible=False
-)
-
-st.plotly_chart(fig, use_container_width=True)
+st.subheader("Details")
+st.write(f"**Invested Capital:** ${invested_capital:,.2f}")
+st.write(f"**Current Value:** ${current_value:,.2f}")
