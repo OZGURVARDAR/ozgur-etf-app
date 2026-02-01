@@ -3,178 +3,234 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import numpy as np
 
 # -------------------------------------------------
-# 1. AYARLAR & SAYFA YAPISI
+# STREAMLIT
 # -------------------------------------------------
-st.set_page_config(page_title="Özgür Portföy Terminal v4", layout="wide", page_icon="📊")
-
-st.sidebar.header("🛠 Grafik & Strateji")
-chart_mode = st.sidebar.selectbox("Grafik Tipi", ["Çizgi Grafik", "Mum Grafiği", "Heikin Ashi"])
-show_benchmark = st.sidebar.toggle("SPY Karşılaştır", True)
-
-# Google Sheet Verisi
-SHEET_ID = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
-URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 
 # -------------------------------------------------
-# 2. VERİ YÜKLEME VE TEMİZLEME
+# SIDEBAR
 # -------------------------------------------------
+st.sidebar.header("🛠 Grafik Ayarları")
+
+chart_type = st.sidebar.selectbox(
+    "Grafik Tipi",
+    ["Mum Grafiği", "Heikin Ashi", "Çizgi Grafik"]
+)
+
+show_ema = st.sidebar.checkbox("EMA'ları Göster", True)
+ema1_val = st.sidebar.number_input("EMA 1", value=20, min_value=1)
+ema2_val = st.sidebar.number_input("EMA 2", value=50, min_value=1)
+
+show_benchmark = st.sidebar.checkbox("Benchmark (SPY %)", True)
+
+# -------------------------------------------------
+# GOOGLE SHEET
+# -------------------------------------------------
+sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
+url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+
 @st.cache_data(ttl=300)
-def load_and_clean_data():
-    df = pd.read_csv(URL)
+def load_trades():
+    df = pd.read_csv(url)
     df["Date"] = pd.to_datetime(df["Date"])
-    for col in ["Quantity", "Price", "Cash"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-    df["Symbol"] = df["Symbol"].str.strip().str.upper()
-    return df.sort_values("Date")
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0.0)
+    df["Price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0.0)
+    df["Cash"] = pd.to_numeric(df["Cash"], errors="coerce").fillna(0.0)
+    return df
 
-df_trades = load_and_clean_data()
-milat_date = df_trades["Date"].min()
-
-# -------------------------------------------------
-# 3. PORTFÖY HESAPLAMA MOTORU (Doğru Getiri Mantığı)
-# -------------------------------------------------
-def calculate_performance(trades):
-    symbols = sorted([s for s in trades["Symbol"].unique() if s != "CASH"])
-    
-    # Piyasa verilerini çek (SPY dahil)
-    market_data = yf.download(symbols + ["SPY"], start=milat_date, progress=False)["Close"]
-    if isinstance(market_data, pd.Series): market_data = market_data.to_frame()
-    market_data = market_data.ffill()
-    
-    all_dates = market_data.index
-    perf_data = []
-    
-    # Takip değişkenleri
-    current_holdings = {sym: 0.0 for sym in symbols}
-    cash_in_hand = 0.0      # Portföydeki nakit (Alım satımlarla değişir)
-    invested_capital = 0.0  # Cebimizden çıkan toplam para (External Flow)
-    
-    for dt in all_dates:
-        # O günkü işlemler
-        daily_trades = trades[trades["Date"] == dt]
-        
-        day_external_flow = 0.0 # O gün dışarıdan eklenen nakit
-        
-        for _, row in daily_trades.iterrows():
-            if row["Symbol"] == "CASH":
-                # Dışarıdan para girişi (Deposit)
-                cash_in_hand += row["Cash"]
-                day_external_flow += row["Cash"]
-                invested_capital += row["Cash"]
-            else:
-                # Hisse işlemi
-                current_holdings[row["Symbol"]] += row["Quantity"]
-                cash_in_hand += row["Cash"] # (Qty * Price + Komisyon zaten Excel'inde Cash sütununda)
-
-        # Portföy Değeri (Mark-to-Market)
-        market_value = sum(current_holdings[s] * market_data.loc[dt, s] for s in symbols if s in market_data.columns)
-        total_nav = market_value + cash_in_hand
-        
-        perf_data.append({
-            "Date": dt,
-            "NAV": total_nav,
-            "External_Flow": day_external_flow,
-            "Invested_Capital": invested_capital,
-            "SPY_Price": market_data.loc[dt, "SPY"]
-        })
-
-    perf_df = pd.DataFrame(perf_data).set_index("Date")
-    return perf_df
-
-perf_df = calculate_performance(df_trades)
+df = load_trades()
 
 # -------------------------------------------------
-# 4. TWR (TIME-WEIGHTED RETURN) HESAPLAMA
+# MILAT TARİHİ
 # -------------------------------------------------
-# Nakit girişlerinden arındırılmış günlük yüzde değişim
-perf_df["Prev_NAV"] = perf_df["NAV"].shift(1)
-perf_df["Daily_Return"] = 0.0
-
-# Formül: (Bugünkü NAV - Eklenen Para - Dünkü NAV) / (Dünkü NAV + Eklenen Para)
-for i in range(1, len(perf_df)):
-    row = perf_df.iloc[i]
-    prev_nav = row["Prev_NAV"]
-    flow = row["External_Flow"]
-    
-    # Payda: Önceki bakiye + yeni eklenen para (Sermaye tabanı)
-    denominator = prev_nav + flow
-    if denominator > 0:
-        # Net kâr = Bugünkü değer - (Dünkü değer + bugün cebimden koyduğum)
-        net_profit = row["NAV"] - (prev_nav + flow)
-        perf_df.iloc[i, perf_df.columns.get_loc("Daily_Return")] = net_profit / denominator
-
-# Kümülatif Getiri
-perf_df["Port_Cum_Return"] = (1 + perf_df["Daily_Return"]).cumprod() - 1
-perf_df["SPY_Cum_Return"] = (perf_df["SPY_Price"] / perf_df["SPY_Price"].iloc[0]) - 1
+milat_date = df["Date"].min()
 
 # -------------------------------------------------
-# 5. GRAFİK HAZIRLIĞI (OHLC & HEIKIN ASHI)
+# SEMBOLLER
 # -------------------------------------------------
-# NAV bazlı Mum grafiği için OHLC oluşturma
-perf_df["Open"] = perf_df["NAV"].shift(1).fillna(perf_df["NAV"])
-perf_df["High"] = perf_df[["Open", "NAV"]].max(axis=1)
-perf_df["Low"] = perf_df[["Open", "NAV"]].min(axis=1)
-perf_df["Close"] = perf_df["NAV"]
-
-if chart_mode == "Heikin Ashi":
-    # HA Hesaplama
-    ha_close = (perf_df["Open"] + perf_df["High"] + perf_df["Low"] + perf_df["Close"]) / 4
-    ha_open = ha_close.copy()
-    for i in range(1, len(perf_df)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-    ha_high = perf_df[["High", "Open", "Close"]].max(axis=1) # Basitleştirilmiş
-    ha_low = perf_df[["Low", "Open", "Close"]].min(axis=1)   # Basitleştirilmiş
-    perf_df["Open"], perf_df["High"], perf_df["Low"], perf_df["Close"] = ha_open, ha_high, ha_low, ha_close
+symbols = sorted(df.loc[df["Symbol"] != "CASH", "Symbol"].unique().tolist())
 
 # -------------------------------------------------
-# 6. GÖRSELLEŞTİRME
+# FİYATLAR
 # -------------------------------------------------
-# Tatil günlerini x ekseninden kaldır
-all_days = pd.date_range(perf_df.index.min(), perf_df.index.max())
-trading_days = perf_df.index
-missing_dates = all_days.difference(trading_days).strftime("%Y-%m-%d").tolist()
+prices = yf.download(
+    symbols + ["SPY"],
+    start=milat_date,
+    progress=False
+)["Close"]
 
-fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+# -------------------------------------------------
+# POZİSYONLAR (HİSSE ADETİ)
+# -------------------------------------------------
+positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
 
-# Üst Panel: Portföy Değeri (Seçilen tipte)
-if chart_mode in ["Mum Grafiği", "Heikin Ashi"]:
-    fig.add_trace(go.Candlestick(
-        x=perf_df.index, open=perf_df["Open"], high=perf_df["High"],
-        low=perf_df["Low"], close=perf_df["Close"], name="NAV (USD)"
-    ), row=1, col=1)
+for sym in symbols:
+    qty_series = (
+        df[df["Symbol"] == sym]
+        .groupby("Date")["Quantity"]
+        .sum()
+        .reindex(prices.index, fill_value=0)
+    )
+    positions[sym] = qty_series.cumsum()
+
+# -------------------------------------------------
+# CASH BAKİYESİ
+# -------------------------------------------------
+cash_flows = (
+    df.groupby("Date")["Cash"]
+    .sum()
+    .reindex(prices.index, fill_value=0)
+)
+
+cash_balance = cash_flows.cumsum()
+
+# -------------------------------------------------
+# PORTFÖY NAV
+# -------------------------------------------------
+stock_value = (positions * prices[symbols]).sum(axis=1)
+portfolio_nav = stock_value + cash_balance
+portfolio_nav = portfolio_nav[portfolio_nav > 0]
+
+# -------------------------------------------------
+# OHLC (GRAFİK İÇİN)
+# -------------------------------------------------
+portfolio_df = pd.DataFrame({"Close": portfolio_nav})
+portfolio_df["Open"] = portfolio_df["Close"].shift(1)
+portfolio_df["High"] = portfolio_df[["Open", "Close"]].max(axis=1)
+portfolio_df["Low"] = portfolio_df[["Open", "Close"]].min(axis=1)
+portfolio_df.dropna(inplace=True)
+
+# -------------------------------------------------
+# GERÇEK GETİRİ (%)
+# -------------------------------------------------
+initial_nav = portfolio_df["Close"].iloc[0]
+portfolio_return = (portfolio_df["Close"] / initial_nav - 1) * 100
+
+# -------------------------------------------------
+# SPY BENCHMARK (%)
+# -------------------------------------------------
+spy_prices = prices["SPY"].dropna()
+spy_prices = spy_prices.loc[portfolio_return.index.min():]
+
+spy_return = (spy_prices / spy_prices.iloc[0] - 1) * 100
+spy_return = spy_return.loc[portfolio_return.index]
+
+# -------------------------------------------------
+# FIGURE
+# -------------------------------------------------
+rows = 2 if show_benchmark else 1
+row_heights = [0.7, 0.3] if show_benchmark else [1]
+
+fig = make_subplots(
+    rows=rows,
+    cols=1,
+    shared_xaxes=True,
+    vertical_spacing=0.05,
+    row_heights=row_heights
+)
+
+# -------------------------------------------------
+# ANA GRAFİK
+# -------------------------------------------------
+if chart_type == "Mum Grafiği":
+    fig.add_trace(
+        go.Candlestick(
+            x=portfolio_df.index,
+            open=portfolio_df["Open"],
+            high=portfolio_df["High"],
+            low=portfolio_df["Low"],
+            close=portfolio_df["Close"],
+            name="Portföy NAV"
+        ),
+        row=1, col=1
+    )
+
+elif chart_type == "Heikin Ashi":
+    ha_close = portfolio_df[["Open", "High", "Low", "Close"]].mean(axis=1)
+    ha_open = ha_close.shift(1).fillna(portfolio_df["Open"])
+    ha_high = pd.concat([portfolio_df["High"], ha_open, ha_close], axis=1).max(axis=1)
+    ha_low = pd.concat([portfolio_df["Low"], ha_open, ha_close], axis=1).min(axis=1)
+
+    fig.add_trace(
+        go.Candlestick(
+            x=portfolio_df.index,
+            open=ha_open,
+            high=ha_high,
+            low=ha_low,
+            close=ha_close,
+            name="Heikin Ashi"
+        ),
+        row=1, col=1
+    )
+
 else:
-    fig.add_trace(go.Scatter(
-        x=perf_df.index, y=perf_df["NAV"], mode='lines', name="NAV (USD)", line=dict(color='#00C805')
-    ), row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_df.index,
+            y=portfolio_df["Close"],
+            name="Portföy NAV"
+        ),
+        row=1, col=1
+    )
 
-# Alt Panel: Getiri Karşılaştırması (%)
-fig.add_trace(go.Scatter(
-    x=perf_df.index, y=perf_df["Port_Cum_Return"]*100,
-    name="Portföy (%)", line=dict(color='#00C805', width=2), fill='tozeroy', fillcolor='rgba(0, 200, 5, 0.1)'
-), row=2, col=1)
+# -------------------------------------------------
+# EMA
+# -------------------------------------------------
+if show_ema:
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_df.index,
+            y=portfolio_df["Close"].ewm(span=ema1_val).mean(),
+            name=f"EMA {ema1_val}"
+        ),
+        row=1, col=1
+    )
 
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_df.index,
+            y=portfolio_df["Close"].ewm(span=ema2_val).mean(),
+            name=f"EMA {ema2_val}"
+        ),
+        row=1, col=1
+    )
+
+# -------------------------------------------------
+# BENCHMARK PANEL
+# -------------------------------------------------
 if show_benchmark:
-    fig.add_trace(go.Scatter(
-        x=perf_df.index, y=perf_df["SPY_Cum_Return"]*100,
-        name="SPY (%)", line=dict(color='orange', dash='dot')
-    ), row=2, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_return.index,
+            y=portfolio_return,
+            name="Portföy Getiri (%)",
+            line=dict(width=2)
+        ),
+        row=2, col=1
+    )
 
-# Layout Ayarları
-fig.update_layout(height=850, template="plotly_dark", xaxis_rangeslider_visible=False, hovermode="x unified")
-fig.update_xaxes(rangebreaks=[dict(values=missing_dates)])
+    fig.add_trace(
+        go.Scatter(
+            x=spy_return.index,
+            y=spy_return,
+            name="SPY Getiri (%)",
+            line=dict(dash="dash", width=2)
+        ),
+        row=2, col=1
+    )
 
-# Metrikler
-total_gain_pct = perf_df["Port_Cum_Return"].iloc[-1] * 100
-spy_gain_pct = perf_df["SPY_Cum_Return"].iloc[-1] * 100
+# -------------------------------------------------
+# LAYOUT
+# -------------------------------------------------
+fig.update_layout(
+    template="plotly_dark",
+    height=900,
+    xaxis_rangeslider_visible=False
+)
 
-st.title("📈 Özgür ETF Portföy Analizi")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Güncel NAV", f"${perf_df['NAV'].iloc[-1]:,.2f}")
-c2.metric("Net Getiri (%)", f"%{total_gain_pct:.2f}")
-c3.metric("SPY Getiri (%)", f"%{spy_gain_pct:.2f}")
-c4.metric("Alpha", f"%{(total_gain_pct - spy_gain_pct):.2f}")
+fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+fig.update_yaxes(side="right")
 
 st.plotly_chart(fig, use_container_width=True)
