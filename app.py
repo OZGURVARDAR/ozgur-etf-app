@@ -33,7 +33,7 @@ def load_data():
 try:
     df_trades = load_data()
     symbols = df_trades['Symbol'].unique().tolist()
-    # 5 yıllık veri için başlangıç tarihini geri çekiyoruz
+    # 5 yıllık veri derinliği
     prices_ohlc = yf.download(symbols, start="2021-01-01", interval="1d")
     
     portfolio_ohlc = pd.DataFrame(index=prices_ohlc.index)
@@ -45,9 +45,16 @@ try:
             cumulative_quantity = symbol_trades['Quantity'].cumsum()
             portfolio_ohlc[col] += prices_ohlc[col][symbol] * cumulative_quantity
 
+    # Portföyün henüz başlamadığı boş tarihleri temizle
     portfolio_ohlc = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
 
-    # --- GRAFİK TİPİ HESAPLAMA ---
+    # --- TATİL VE HAFTA SONU BOŞLUKLARINI HESAPLA ---
+    # Sadece verimizde olan tarihleri göster, geri kalan her şeyi (boşlukları) sil
+    dt_all = pd.date_range(start=portfolio_ohlc.index.min(), end=portfolio_ohlc.index.max())
+    dt_obs = [d.strftime("%Y-%m-%d") for d in portfolio_ohlc.index]
+    dt_breaks = [d for d in dt_all.strftime("%Y-%m-%d").tolist() if d not in dt_obs]
+
+    # Heikin Ashi Hesaplama
     if chart_type == "Heikin Ashi":
         ha_close = (portfolio_ohlc['Open'] + portfolio_ohlc['High'] + portfolio_ohlc['Low'] + portfolio_ohlc['Close']) / 4
         ha_open = portfolio_ohlc['Open'].copy()
@@ -76,11 +83,11 @@ try:
     if show_ema_custom:
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['EMA_Custom'], line=dict(color='#ff9800', width=1), name=f'EMA {ema_custom_val}'))
 
-    # --- GÜNCELLENMİŞ ZAMAN SKALASI (STABİL) ---
+    # --- KESİNTİSİZ X EKSENİ AYARLARI ---
     fig.update_xaxes(
         type='date',
         gridcolor="#2a2e39",
-        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangebreaks=[dict(values=dt_breaks)], # Veride olmayan her günü grafikten gizle
         rangeselector=dict(
             buttons=list([
                 dict(count=1, label="1A", step="month", stepmode="backward"),
