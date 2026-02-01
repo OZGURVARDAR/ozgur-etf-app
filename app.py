@@ -23,7 +23,7 @@ show_ema = st.sidebar.checkbox("EMA'ları Göster", True)
 ema1_val = st.sidebar.number_input("EMA 1", value=20, min_value=1)
 ema2_val = st.sidebar.number_input("EMA 2", value=50, min_value=1)
 
-show_benchmark = st.sidebar.checkbox("Benchmark (SPY %)", True)
+show_benchmark = st.sidebar.checkbox("Benchmark (TWR %)", True)
 
 # -------------------------------------------------
 # GOOGLE SHEET
@@ -35,13 +35,16 @@ url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 def load_trades():
     df = pd.read_csv(url)
     df["Date"] = pd.to_datetime(df["Date"])
-    return df.groupby(["Date", "Symbol"])["Quantity"].sum().reset_index()
+    if "Cash" not in df.columns:
+        df["Cash"] = 0.0
+    return df
 
 df_trades = load_trades()
-symbols = df_trades["Symbol"].unique().tolist()
+
+symbols = df_trades.loc[df_trades["Symbol"] != "CASH", "Symbol"].unique().tolist()
 
 # -------------------------------------------------
-# MILAT TARİHİ (İLK ALIM)
+# MILAT TARİHİ
 # -------------------------------------------------
 milat_date = df_trades["Date"].min()
 
@@ -56,7 +59,7 @@ prices = yf.download(
 )["Close"]
 
 # -------------------------------------------------
-# PORTFÖY HESABI (NAV)
+# POZİSYONLAR
 # -------------------------------------------------
 positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
 
@@ -68,9 +71,32 @@ for s in symbols:
     )
     positions[s] = s_trades["Quantity"].cumsum()
 
-portfolio_value = (positions * prices[symbols]).sum(axis=1)
+# -------------------------------------------------
+# HİSSE DEĞERİ
+# -------------------------------------------------
+stock_value = (positions * prices[symbols]).sum(axis=1)
+
+# -------------------------------------------------
+# NAKİT HESABI
+# -------------------------------------------------
+cash_flows = (
+    df_trades
+    .groupby("Date")["Cash"]
+    .sum()
+    .reindex(prices.index, fill_value=0)
+)
+
+cash_balance = cash_flows.cumsum()
+
+# -------------------------------------------------
+# PORTFÖY NAV
+# -------------------------------------------------
+portfolio_value = stock_value + cash_balance
 portfolio_value = portfolio_value[portfolio_value > 0]
 
+# -------------------------------------------------
+# PORTFÖY OHLC
+# -------------------------------------------------
 portfolio_df = pd.DataFrame({"Close": portfolio_value})
 portfolio_df["Open"] = portfolio_df["Close"].shift(1)
 portfolio_df["High"] = portfolio_df[["Open", "Close"]].max(axis=1)
@@ -78,24 +104,38 @@ portfolio_df["Low"] = portfolio_df[["Open", "Close"]].min(axis=1)
 portfolio_df.dropna(inplace=True)
 
 # -------------------------------------------------
-# BENCHMARK GETİRİ (%)
+# TWR (PORTFÖY)
 # -------------------------------------------------
-if show_benchmark:
-    # Portföy %
-    port_ret = (
-        portfolio_df["Close"] / portfolio_df["Close"].iloc[0] - 1
-    ) * 100
+twr_returns = []
+prev_nav = None
 
-    # SPY %
-    spy_prices = prices["SPY"].dropna()
-    spy_ret = (
-        spy_prices / spy_prices.iloc[0] - 1
-    ) * 100
+for date in portfolio_df.index:
+    nav_today = portfolio_df.loc[date, "Close"]
+    flow = cash_flows.get(date, 0)
 
-    # Tarih hizalama
-    common_index = port_ret.index.intersection(spy_ret.index)
-    port_ret = port_ret.loc[common_index]
-    spy_ret = spy_ret.loc[common_index]
+    if prev_nav is None:
+        twr_returns.append(0)
+    else:
+        twr_returns.append((nav_today - flow) / prev_nav - 1)
+
+    prev_nav = nav_today
+
+twr_returns = pd.Series(twr_returns, index=portfolio_df.index)
+port_twr_pct = (1 + twr_returns).cumprod() * 100
+
+# -------------------------------------------------
+# SPY TWR
+# -------------------------------------------------
+spy_prices = prices["SPY"].dropna()
+spy_prices = spy_prices.loc[port_twr_pct.index.min():]
+
+spy_ret = spy_prices.pct_change().fillna(0)
+spy_twr_pct = (1 + spy_ret).cumprod() * 100
+
+# Tarih hizalama
+common_index = port_twr_pct.index.intersection(spy_twr_pct.index)
+port_twr_pct = port_twr_pct.loc[common_index]
+spy_twr_pct = spy_twr_pct.loc[common_index]
 
 # -------------------------------------------------
 # FIGURE
@@ -122,7 +162,7 @@ if chart_type == "Mum Grafiği":
             high=portfolio_df["High"],
             low=portfolio_df["Low"],
             close=portfolio_df["Close"],
-            name="Portföy"
+            name="Portföy NAV"
         ),
         row=1, col=1
     )
@@ -150,7 +190,7 @@ else:
         go.Scatter(
             x=portfolio_df.index,
             y=portfolio_df["Close"],
-            name="Portföy"
+            name="Portföy NAV"
         ),
         row=1, col=1
     )
@@ -178,14 +218,14 @@ if show_ema:
     )
 
 # -------------------------------------------------
-# BENCHMARK PANEL (%)
+# BENCHMARK PANEL
 # -------------------------------------------------
 if show_benchmark:
     fig.add_trace(
         go.Scatter(
-            x=port_ret.index,
-            y=port_ret,
-            name="Portföy Getirisi (%)",
+            x=port_twr_pct.index,
+            y=port_twr_pct,
+            name="Portföy Getirisi (TWR)",
             line=dict(width=2)
         ),
         row=2, col=1
@@ -193,9 +233,9 @@ if show_benchmark:
 
     fig.add_trace(
         go.Scatter(
-            x=spy_ret.index,
-            y=spy_ret,
-            name="SPY Getirisi (%)",
+            x=spy_twr_pct.index,
+            y=spy_twr_pct,
+            name="SPY Getirisi",
             line=dict(dash="dash", width=2)
         ),
         row=2, col=1
