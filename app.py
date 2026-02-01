@@ -4,9 +4,6 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# -------------------------------------------------
-# STREAMLIT
-# -------------------------------------------------
 st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 
 # -------------------------------------------------
@@ -23,7 +20,7 @@ show_ema = st.sidebar.checkbox("EMA'ları Göster", True)
 ema1_val = st.sidebar.number_input("EMA 1", value=20, min_value=1)
 ema2_val = st.sidebar.number_input("EMA 2", value=50, min_value=1)
 
-show_benchmark = st.sidebar.checkbox("Benchmark (TWR %)", True)
+show_benchmark = st.sidebar.checkbox("Benchmark (SPY vs Portföy %)", True)
 
 # -------------------------------------------------
 # GOOGLE SHEET
@@ -35,16 +32,14 @@ url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 def load_trades():
     df = pd.read_csv(url)
     df["Date"] = pd.to_datetime(df["Date"])
-    if "Cash" not in df.columns:
-        df["Cash"] = 0.0
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0.0)
     return df
 
 df_trades = load_trades()
-
-symbols = df_trades.loc[df_trades["Symbol"] != "CASH", "Symbol"].unique().tolist()
+symbols = df_trades["Symbol"].unique().tolist()
 
 # -------------------------------------------------
-# MILAT TARİHİ
+# MILAT TARİHİ (İLK İŞLEM)
 # -------------------------------------------------
 milat_date = df_trades["Date"].min()
 
@@ -59,7 +54,7 @@ prices = yf.download(
 )["Close"]
 
 # -------------------------------------------------
-# POZİSYONLAR
+# PORTFÖY POZİSYONLARI
 # -------------------------------------------------
 positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
 
@@ -71,101 +66,58 @@ for s in symbols:
     )
     positions[s] = s_trades["Quantity"].cumsum()
 
-# -------------------------------------------------
-# HİSSE DEĞERİ
-# -------------------------------------------------
-stock_value = (positions * prices[symbols]).sum(axis=1)
+portfolio_nav = (positions * prices[symbols]).sum(axis=1)
+portfolio_nav = portfolio_nav[portfolio_nav > 0]
 
-# -------------------------------------------------
-# NAKİT HESABI
-# -------------------------------------------------
-cash_flows = (
-    df_trades
-    .groupby("Date")["Cash"]
-    .sum()
-    .reindex(prices.index, fill_value=0)
-)
-
-cash_balance = cash_flows.cumsum()
-
-# -------------------------------------------------
-# PORTFÖY NAV
-# -------------------------------------------------
-portfolio_value = stock_value + cash_balance
-portfolio_value = portfolio_value[portfolio_value > 0]
-
-# -------------------------------------------------
-# PORTFÖY OHLC
-# -------------------------------------------------
-portfolio_df = pd.DataFrame({"Close": portfolio_value})
+portfolio_df = pd.DataFrame({"Close": portfolio_nav})
 portfolio_df["Open"] = portfolio_df["Close"].shift(1)
 portfolio_df["High"] = portfolio_df[["Open", "Close"]].max(axis=1)
 portfolio_df["Low"] = portfolio_df[["Open", "Close"]].min(axis=1)
 portfolio_df.dropna(inplace=True)
 
 # -------------------------------------------------
-# TWR (PORTFÖY)
+# BENCHMARK (% GETİRİ – DOĞRU)
 # -------------------------------------------------
-twr_returns = []
-prev_nav = None
+if show_benchmark:
+    start_date = portfolio_df.index.min()
 
-for date in portfolio_df.index:
-    nav_today = portfolio_df.loc[date, "Close"]
-    flow = cash_flows.get(date, 0)
+    # Portföy %
+    port_start = portfolio_df.loc[start_date, "Close"]
+    port_ret = (portfolio_df["Close"] / port_start - 1) * 100
 
-    if prev_nav is None:
-        twr_returns.append(0)
-    else:
-        twr_returns.append((nav_today - flow) / prev_nav - 1)
+    # SPY %
+    spy_prices = prices["SPY"].dropna()
+    spy_prices = spy_prices.loc[start_date:]
+    spy_start = spy_prices.iloc[0]
+    spy_ret = (spy_prices / spy_start - 1) * 100
 
-    prev_nav = nav_today
-
-twr_returns = pd.Series(twr_returns, index=portfolio_df.index)
-port_twr_pct = (1 + twr_returns).cumprod() * 100
-
-# -------------------------------------------------
-# SPY TWR
-# -------------------------------------------------
-spy_prices = prices["SPY"].dropna()
-spy_prices = spy_prices.loc[port_twr_pct.index.min():]
-
-spy_ret = spy_prices.pct_change().fillna(0)
-spy_twr_pct = (1 + spy_ret).cumprod() * 100
-
-# Tarih hizalama
-common_index = port_twr_pct.index.intersection(spy_twr_pct.index)
-port_twr_pct = port_twr_pct.loc[common_index]
-spy_twr_pct = spy_twr_pct.loc[common_index]
+    common_index = port_ret.index.intersection(spy_ret.index)
+    port_ret = port_ret.loc[common_index]
+    spy_ret = spy_ret.loc[common_index]
 
 # -------------------------------------------------
 # FIGURE
 # -------------------------------------------------
 rows = 2 if show_benchmark else 1
-row_heights = [0.7, 0.3] if show_benchmark else [1]
-
 fig = make_subplots(
     rows=rows,
     cols=1,
     shared_xaxes=True,
-    vertical_spacing=0.05,
-    row_heights=row_heights
+    row_heights=[0.7, 0.3] if show_benchmark else [1]
 )
 
 # -------------------------------------------------
 # ANA GRAFİK
 # -------------------------------------------------
 if chart_type == "Mum Grafiği":
-    fig.add_trace(
-        go.Candlestick(
-            x=portfolio_df.index,
-            open=portfolio_df["Open"],
-            high=portfolio_df["High"],
-            low=portfolio_df["Low"],
-            close=portfolio_df["Close"],
-            name="Portföy NAV"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Candlestick(
+        x=portfolio_df.index,
+        open=portfolio_df["Open"],
+        high=portfolio_df["High"],
+        low=portfolio_df["Low"],
+        close=portfolio_df["Close"],
+        name="Portföy"
+    ), row=1, col=1)
 
 elif chart_type == "Heikin Ashi":
     ha_close = portfolio_df[["Open", "High", "Low", "Close"]].mean(axis=1)
@@ -173,73 +125,53 @@ elif chart_type == "Heikin Ashi":
     ha_high = pd.concat([portfolio_df["High"], ha_open, ha_close], axis=1).max(axis=1)
     ha_low = pd.concat([portfolio_df["Low"], ha_open, ha_close], axis=1).min(axis=1)
 
-    fig.add_trace(
-        go.Candlestick(
-            x=portfolio_df.index,
-            open=ha_open,
-            high=ha_high,
-            low=ha_low,
-            close=ha_close,
-            name="Heikin Ashi"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Candlestick(
+        x=portfolio_df.index,
+        open=ha_open,
+        high=ha_high,
+        low=ha_low,
+        close=ha_close,
+        name="Heikin Ashi"
+    ), row=1, col=1)
 
 else:
-    fig.add_trace(
-        go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Close"],
-            name="Portföy NAV"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=portfolio_df.index,
+        y=portfolio_df["Close"],
+        name="Portföy"
+    ), row=1, col=1)
 
-# -------------------------------------------------
 # EMA
-# -------------------------------------------------
 if show_ema:
-    fig.add_trace(
-        go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Close"].ewm(span=ema1_val).mean(),
-            name=f"EMA {ema1_val}"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=portfolio_df.index,
+        y=portfolio_df["Close"].ewm(span=ema1_val).mean(),
+        name=f"EMA {ema1_val}"
+    ), row=1, col=1)
 
-    fig.add_trace(
-        go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Close"].ewm(span=ema2_val).mean(),
-            name=f"EMA {ema2_val}"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=portfolio_df.index,
+        y=portfolio_df["Close"].ewm(span=ema2_val).mean(),
+        name=f"EMA {ema2_val}"
+    ), row=1, col=1)
 
 # -------------------------------------------------
 # BENCHMARK PANEL
 # -------------------------------------------------
 if show_benchmark:
-    fig.add_trace(
-        go.Scatter(
-            x=port_twr_pct.index,
-            y=port_twr_pct,
-            name="Portföy Getirisi (TWR)",
-            line=dict(width=2)
-        ),
-        row=2, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=port_ret.index,
+        y=port_ret,
+        name="Portföy Getirisi (%)",
+        line=dict(width=2)
+    ), row=2, col=1)
 
-    fig.add_trace(
-        go.Scatter(
-            x=spy_twr_pct.index,
-            y=spy_twr_pct,
-            name="SPY Getirisi",
-            line=dict(dash="dash", width=2)
-        ),
-        row=2, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=spy_ret.index,
+        y=spy_ret,
+        name="SPY Getirisi (%)",
+        line=dict(dash="dash", width=2)
+    ), row=2, col=1)
 
 # -------------------------------------------------
 # LAYOUT
@@ -249,7 +181,6 @@ fig.update_layout(
     height=900,
     xaxis_rangeslider_visible=False
 )
-
 fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 fig.update_yaxes(side="right")
 
