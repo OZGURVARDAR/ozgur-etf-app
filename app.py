@@ -4,9 +4,6 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# -------------------------------------------------
-# STREAMLIT AYARLARI
-# -------------------------------------------------
 st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 
 # -------------------------------------------------
@@ -16,221 +13,147 @@ st.sidebar.header("🛠 Grafik Ayarları")
 
 chart_type = st.sidebar.selectbox(
     "Grafik Tipi",
-    ["Çizgi Grafik"]  # Mumları kapattık (benchmark ile ölçek çakışmasın diye)
+    ["Mum Grafiği", "Heikin Ashi", "Çizgi Grafik"]
 )
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Göstergeler")
+show_ema = st.sidebar.checkbox("EMA'ları Göster", True)
+ema1_val = st.sidebar.number_input("EMA 1", value=20)
+ema2_val = st.sidebar.number_input("EMA 2", value=50)
 
-show_ema = st.sidebar.checkbox("EMA'ları Göster", value=True)
-ema1_val = st.sidebar.number_input("EMA 1 Periyot", value=20, min_value=1)
-ema2_val = st.sidebar.number_input("EMA 2 Periyot", value=50, min_value=1)
-
-show_rsi = st.sidebar.checkbox("RSI Göster", value=False)
-show_drawdown = st.sidebar.checkbox("Drawdown Göster", value=False)
-show_benchmark = st.sidebar.checkbox("Benchmark (S&P 500) Kıyasla", value=True)
-show_pie = st.sidebar.checkbox("Portföy Dağılımını Göster", value=True)
+show_benchmark = st.sidebar.checkbox("Benchmark (SPY)", True)
 
 # -------------------------------------------------
-# GOOGLE SHEET'TEN İŞLEM VERİSİ
+# DATA
 # -------------------------------------------------
 sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
 url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_trades():
     df = pd.read_csv(url)
     df["Date"] = pd.to_datetime(df["Date"])
-    df = df.groupby(["Date", "Symbol"])["Quantity"].sum().reset_index()
-    return df
+    return df.groupby(["Date", "Symbol"])["Quantity"].sum().reset_index()
 
 df_trades = load_trades()
 symbols = df_trades["Symbol"].unique().tolist()
 
-download_list = symbols + (["SPY"] if show_benchmark else [])
-
-prices_all = yf.download(
-    download_list,
-    start="2020-01-01",
-    interval="1d",
-    progress=False
-)
+prices = yf.download(symbols + ["SPY"], start="2020-01-01", progress=False)["Close"]
 
 # -------------------------------------------------
-# PORTFÖY HESAPLAMA
+# PORTFÖY NAV
 # -------------------------------------------------
-close_prices = prices_all["Close"]
-
-if isinstance(close_prices, pd.Series):
-    close_prices = close_prices.to_frame(symbols[0])
-
-positions = pd.DataFrame(0, index=close_prices.index, columns=symbols)
+positions = pd.DataFrame(0, index=prices.index, columns=symbols)
 
 for s in symbols:
-    s_trades = (
+    qty = (
         df_trades[df_trades["Symbol"] == s]
         .set_index("Date")
-        .reindex(close_prices.index)
+        .reindex(prices.index)
         .fillna(0)
+        .cumsum()
     )
-    positions[s] = s_trades["Quantity"].cumsum()
+    positions[s] = qty["Quantity"]
 
-portfolio_value = (positions * close_prices).sum(axis=1)
-portfolio_value = portfolio_value[portfolio_value > 0]
+portfolio = (positions * prices[symbols]).sum(axis=1)
+portfolio = portfolio[portfolio > 0]
 
-portfolio_df = pd.DataFrame({"Close": portfolio_value})
-
-# -------------------------------------------------
-# PORTFÖY GETİRİ ENDEKSİ (1 = başlangıç)
-# -------------------------------------------------
-port_ret = portfolio_df["Close"].pct_change().fillna(0)
-port_index = (1 + port_ret).cumprod()
+df = pd.DataFrame({"Close": portfolio})
+df["Open"] = df["Close"].shift(1)
+df["High"] = df[["Open", "Close"]].max(axis=1)
+df["Low"] = df[["Open", "Close"]].min(axis=1)
+df.dropna(inplace=True)
 
 # -------------------------------------------------
-# GRAFİK SETUP
+# BENCHMARK RETURNS (AYRI GRAFİK)
 # -------------------------------------------------
-rows = 1
-row_heights = [0.7]
+spy = prices["SPY"].loc[df.index.min():]
+spy_ret = (1 + spy.pct_change().fillna(0)).cumprod()
+port_ret = (1 + df["Close"].pct_change().fillna(0)).cumprod()
 
-if show_rsi:
-    rows += 1
-    row_heights.append(0.15)
-
-if show_drawdown:
-    rows += 1
-    row_heights.append(0.15)
-
+# -------------------------------------------------
+# FIGURE
+# -------------------------------------------------
+rows = 2 if show_benchmark else 1
 fig = make_subplots(
     rows=rows,
     cols=1,
     shared_xaxes=True,
-    vertical_spacing=0.03,
-    row_heights=row_heights
+    vertical_spacing=0.05,
+    row_heights=[0.7, 0.3] if rows == 2 else [1]
 )
 
-# -------------------------------------------------
-# ANA GRAFİK – PORTFÖY (INDEX)
-# -------------------------------------------------
-fig.add_trace(
-    go.Scatter(
-        x=port_index.index,
-        y=port_index,
-        name="Portföy (Index)",
-        line=dict(width=2)
-    ),
-    row=1, col=1
-)
+# -------- MAIN PRICE GRAPH --------
+if chart_type == "Mum Grafiği":
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"],
+        high=df["High"],
+        low=df["Low"],
+        close=df["Close"],
+        name="Portföy"
+    ), row=1, col=1)
 
-# -------------------------------------------------
+elif chart_type == "Heikin Ashi":
+    ha_close = df[["Open", "High", "Low", "Close"]].mean(axis=1)
+    ha_open = ha_close.shift(1).fillna(df["Open"])
+    ha_high = pd.concat([df["High"], ha_open, ha_close], axis=1).max(axis=1)
+    ha_low = pd.concat([df["Low"], ha_open, ha_close], axis=1).min(axis=1)
+
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=ha_open,
+        high=ha_high,
+        low=ha_low,
+        close=ha_close,
+        name="Heikin Ashi"
+    ), row=1, col=1)
+
+else:
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df["Close"],
+        name="Portföy"
+    ), row=1, col=1)
+
 # EMA
-# -------------------------------------------------
 if show_ema:
-    fig.add_trace(
-        go.Scatter(
-            x=port_index.index,
-            y=port_index.ewm(span=ema1_val).mean(),
-            name=f"EMA {ema1_val}"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df["Close"].ewm(span=ema1_val).mean(),
+        name=f"EMA {ema1_val}"
+    ), row=1, col=1)
 
-    fig.add_trace(
-        go.Scatter(
-            x=port_index.index,
-            y=port_index.ewm(span=ema2_val).mean(),
-            name=f"EMA {ema2_val}"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df["Close"].ewm(span=ema2_val).mean(),
+        name=f"EMA {ema2_val}"
+    ), row=1, col=1)
 
-# -------------------------------------------------
-# BENCHMARK (SPY) – DOĞRU VE NET
-# -------------------------------------------------
-if show_benchmark and "SPY" in prices_all["Close"].columns:
+# -------- BENCHMARK GRAPH --------
+if show_benchmark:
+    fig.add_trace(go.Scatter(
+        x=port_ret.index,
+        y=port_ret,
+        name="Portföy Return"
+    ), row=2, col=1)
 
-    spy_prices = prices_all["Close"]["SPY"].dropna()
-    spy_prices = spy_prices.loc[port_index.index.min():]
-
-    spy_ret = spy_prices.pct_change().fillna(0)
-    spy_index = (1 + spy_ret).cumprod()
-
-    common_index = port_index.index.intersection(spy_index.index)
-
-    fig.add_trace(
-        go.Scatter(
-            x=common_index,
-            y=spy_index.loc[common_index],
-            name="S&P 500 (SPY)",
-            line=dict(dash="dash", width=2)
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(
+        x=spy_ret.index,
+        y=spy_ret,
+        name="SPY Return",
+        line=dict(dash="dash")
+    ), row=2, col=1)
 
 # -------------------------------------------------
-# RSI
+# LAYOUT
 # -------------------------------------------------
-current_row = 2
-if show_rsi:
-    delta = port_index.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean().replace(0, 1e-9)
-
-    rsi = 100 - (100 / (1 + avg_gain / avg_loss))
-
-    fig.add_trace(
-        go.Scatter(x=port_index.index, y=rsi, name="RSI"),
-        row=current_row, col=1
-    )
-    current_row += 1
-
-# -------------------------------------------------
-# DRAWDOWN
-# -------------------------------------------------
-if show_drawdown:
-    dd = (port_index / port_index.cummax() - 1) * 100
-
-    fig.add_trace(
-        go.Scatter(
-            x=port_index.index,
-            y=dd,
-            fill="tozeroy",
-            name="Drawdown %"
-        ),
-        row=current_row, col=1
-    )
-
-# -------------------------------------------------
-# GÖRÜNÜM
-# -------------------------------------------------
-fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 fig.update_layout(
     template="plotly_dark",
-    height=850,
+    height=900,
     xaxis_rangeslider_visible=False
 )
 fig.update_yaxes(side="right")
+fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 
 st.plotly_chart(fig, use_container_width=True)
-
-# -------------------------------------------------
-# PASTA GRAFİĞİ
-# -------------------------------------------------
-if show_pie:
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Portföy Dağılımı")
-
-    last_prices = close_prices.iloc[-1]
-    pie_values = []
-
-    for s in symbols:
-        qty = df_trades[df_trades["Symbol"] == s]["Quantity"].sum()
-        pie_values.append(qty * last_prices[s])
-
-    pie_fig = go.Figure(
-        data=[go.Pie(labels=symbols, values=pie_values, hole=0.35)]
-    )
-    pie_fig.update_layout(template="plotly_dark", height=350)
-    st.sidebar.plotly_chart(pie_fig, use_container_width=True)
