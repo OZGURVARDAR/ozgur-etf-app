@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 
 st.set_page_config(layout="wide")
-st.title("📊 Portfolio Return Checker (Cash Ignored)")
+st.title("📊 Portfolio Return (Cash Ignored – Clean Version)")
 
 # =========================
 # LOAD GOOGLE SHEETS
@@ -14,9 +14,23 @@ SHEET_NAME = "Sheet1"
 url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
 df = pd.read_csv(url)
 
-# Clean
-df["Quantity"] = pd.to_numeric(df["Quantity"])
-df["Price"] = pd.to_numeric(df["Price"])
+# =========================
+# CLEAN DATA (CRITICAL PART)
+# =========================
+df["Quantity"] = (
+    df["Quantity"]
+    .astype(str)
+    .str.replace(",", ".", regex=False)
+    .astype(float)
+)
+
+df["Price"] = (
+    df["Price"]
+    .astype(str)
+    .str.replace(",", ".", regex=False)
+    .astype(float)
+)
+
 df["Date"] = pd.to_datetime(df["Date"])
 
 # =========================
@@ -33,7 +47,6 @@ symbols = df["Symbol"].unique().tolist()
 prices = yf.download(
     tickers=symbols,
     period="5d",
-    group_by="ticker",
     auto_adjust=True,
     progress=False
 )
@@ -46,7 +59,7 @@ def get_last_price(symbol):
 # =========================
 # CURRENT VALUE
 # =========================
-current_value = 0
+current_value = 0.0
 
 for _, row in df.iterrows():
     last_price = get_last_price(row["Symbol"])
@@ -61,12 +74,11 @@ total_return_pct = (current_value - invested_capital) / invested_capital * 100
 # DISPLAY
 # =========================
 st.metric(
-    label="📈 Total Portfolio Return (%)",
-    value=f"{total_return_pct:.2f}%"
+    "📈 Total Portfolio Return (%)",
+    f"{total_return_pct:.2f}%"
 )
 
 st.divider()
 
-st.subheader("Details")
 st.write(f"**Invested Capital:** ${invested_capital:,.2f}")
 st.write(f"**Current Value:** ${current_value:,.2f}")
