@@ -186,22 +186,23 @@ if show_ema:
     )
 
 # -------------------------------------------------
-# BENCHMARK
+# BENCHMARK (SPY)
 # -------------------------------------------------
 if show_benchmark and "SPY" in prices_all["Close"].columns:
 
-    # Portföyün gerçek başlangıç tarihi
-    start_date = portfolio_df.index[0]
+    # Portföyün ilk gerçek tarihi
+    start_date = portfolio_df.index.min()
 
-    spy_raw = prices_all["Close"]["SPY"].dropna()
+    # SPY kapanış fiyatları
+    spy = prices_all["Close"]["SPY"].dropna()
 
-    # SPY'ı portföy başlangıcından başlat
-    spy = spy_raw.loc[start_date:]
+    # Portföy başlangıcından itibaren al
+    spy = spy.loc[start_date:]
 
-    # Aynı tarihlere hizala
+    # Portföy tarihleriyle hizala
     spy = spy.reindex(portfolio_df.index).ffill()
 
-    # Doğru normalize
+    # Normalize et (aynı başlangıç değeri)
     spy_norm = spy / spy.iloc[0] * portfolio_df["Close"].iloc[0]
 
     fig.add_trace(
@@ -209,10 +210,11 @@ if show_benchmark and "SPY" in prices_all["Close"].columns:
             x=spy_norm.index,
             y=spy_norm,
             name="S&P 500 (SPY)",
-            line=dict(dash="dash")
+            line=dict(dash="dash", width=2)
         ),
         row=1, col=1
     )
+
 
 # -------------------------------------------------
 # RSI
