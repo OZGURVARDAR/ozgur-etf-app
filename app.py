@@ -4,7 +4,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("📊 Portföy Getirisi – DOĞRU HESAP (Cash Yok)")
+st.title("📊 Portföy Getirisi – Temel ve Doğru")
 
 # -----------------------------
 # GOOGLE SHEETS
@@ -13,14 +13,22 @@ sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
 url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 
 @st.cache_data
-def load_trades():
+def load_data():
     df = pd.read_csv(url)
     df["Date"] = pd.to_datetime(df["Date"])
+
+    # 🔴 ZORUNLU TİP DÖNÜŞÜMÜ
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
+    df["Price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0)
+
     return df
 
-df = load_trades()
+df = load_data()
 df = df[df["Symbol"] != "CASH"]
 
+# -----------------------------
+# SEMBOLLER
+# -----------------------------
 symbols = df["Symbol"].unique().tolist()
 start_date = df["Date"].min()
 
@@ -52,48 +60,38 @@ for s in symbols:
 portfolio_value = (positions * prices).sum(axis=1)
 portfolio_value = portfolio_value[portfolio_value > 0]
 
-# -----------------------------
-# TOPLAM YATIRILAN PARA
-# -----------------------------
-# SADECE ALIMLAR
-invested = (df[df["Quantity"] > 0]["Quantity"] * df["Price"]).sum()
-
-current_value = portfolio_value.iloc[-1]
-
-total_return_pct = (current_value - invested) / invested * 100
+current_value = float(portfolio_value.iloc[-1])
 
 # -----------------------------
-# SONUÇ
+# TOPLAM YATIRIM (SADECE ALIM)
 # -----------------------------
-st.metric(
-    label="Toplam Portföy Getirisi (%)",
-    value=f"{total_return_pct:.2f}%"
+invested = float(
+    (df[df["Quantity"] > 0]["Quantity"] * df["Price"]).sum()
 )
 
+# -----------------------------
+# GETİRİ
+# -----------------------------
+total_return_pct = (current_value - invested) / invested * 100
+
+st.metric("Toplam Portföy Getirisi (%)", f"{total_return_pct:.2f}%")
 st.write(f"💰 Toplam Yatırılan: {invested:,.2f} $")
 st.write(f"📈 Güncel Değer: {current_value:,.2f} $")
 
 # -----------------------------
-# BASİT MUM (KONTROL)
+# GRAFİK (SADE)
 # -----------------------------
-df_candle = pd.DataFrame({"Close": portfolio_value})
-df_candle["Open"] = df_candle["Close"].shift(1)
-df_candle["High"] = df_candle[["Open", "Close"]].max(axis=1)
-df_candle["Low"] = df_candle[["Open", "Close"]].min(axis=1)
-df_candle.dropna(inplace=True)
-
-fig = go.Figure(go.Candlestick(
-    x=df_candle.index,
-    open=df_candle["Open"],
-    high=df_candle["High"],
-    low=df_candle["Low"],
-    close=df_candle["Close"]
+fig = go.Figure()
+fig.add_trace(go.Scatter(
+    x=portfolio_value.index,
+    y=portfolio_value,
+    mode="lines",
+    name="Portföy Değeri"
 ))
 
 fig.update_layout(
     template="plotly_dark",
-    height=600,
-    xaxis_rangeslider_visible=False
+    height=600
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, use_container_width=True_
