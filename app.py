@@ -189,8 +189,20 @@ if show_ema:
 # BENCHMARK
 # -------------------------------------------------
 if show_benchmark and "SPY" in prices_all["Close"].columns:
-    spy = prices_all["Close"]["SPY"].reindex(portfolio_df.index).ffill()
-    spy_norm = spy / spy.iloc[0] * portfolio_df["Close"].iloc[0]
+    # Portföyün gerçek başlangıç tarihi
+start_date = portfolio_df.index[0]
+
+spy_raw = prices_all["Close"]["SPY"].dropna()
+
+# SPY'ı portföy başlangıcından başlat
+spy = spy_raw.loc[start_date:]
+
+# Aynı tarihlere hizala
+spy = spy.reindex(portfolio_df.index).ffill()
+
+# Doğru normalize
+spy_norm = spy / spy.iloc[0] * portfolio_df["Close"].iloc[0]
+
 
     fig.add_trace(
         go.Scatter(
