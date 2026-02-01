@@ -13,9 +13,10 @@ st.set_page_config(page_title="Özgür ETF Terminal", layout="wide")
 # SIDEBAR
 # -------------------------------------------------
 st.sidebar.header("🛠 Grafik Ayarları")
+
 chart_type = st.sidebar.selectbox(
     "Grafik Tipi",
-    ["Mum Grafiği", "Heikin Ashi", "Çizgi Grafik"]
+    ["Çizgi Grafik"]  # Mumları kapattık (benchmark ile ölçek çakışmasın diye)
 )
 
 st.sidebar.markdown("---")
@@ -27,7 +28,7 @@ ema2_val = st.sidebar.number_input("EMA 2 Periyot", value=50, min_value=1)
 
 show_rsi = st.sidebar.checkbox("RSI Göster", value=False)
 show_drawdown = st.sidebar.checkbox("Drawdown Göster", value=False)
-show_benchmark = st.sidebar.checkbox("Benchmark (S&P 500) Kıyasla", value=False)
+show_benchmark = st.sidebar.checkbox("Benchmark (S&P 500) Kıyasla", value=True)
 show_pie = st.sidebar.checkbox("Portföy Dağılımını Göster", value=True)
 
 # -------------------------------------------------
@@ -56,17 +57,14 @@ prices_all = yf.download(
 )
 
 # -------------------------------------------------
-# PORTFÖY HESAPLAMA (NAV)
+# PORTFÖY HESAPLAMA
 # -------------------------------------------------
 close_prices = prices_all["Close"]
+
 if isinstance(close_prices, pd.Series):
     close_prices = close_prices.to_frame(symbols[0])
 
-positions = pd.DataFrame(
-    0,
-    index=close_prices.index,
-    columns=symbols
-)
+positions = pd.DataFrame(0, index=close_prices.index, columns=symbols)
 
 for s in symbols:
     s_trades = (
@@ -82,13 +80,14 @@ portfolio_value = portfolio_value[portfolio_value > 0]
 
 portfolio_df = pd.DataFrame({"Close": portfolio_value})
 
-portfolio_df["Open"] = portfolio_df["Close"].shift(1)
-portfolio_df["High"] = portfolio_df[["Open", "Close"]].max(axis=1)
-portfolio_df["Low"] = portfolio_df[["Open", "Close"]].min(axis=1)
-portfolio_df.dropna(inplace=True)
+# -------------------------------------------------
+# PORTFÖY GETİRİ ENDEKSİ (1 = başlangıç)
+# -------------------------------------------------
+port_ret = portfolio_df["Close"].pct_change().fillna(0)
+port_index = (1 + port_ret).cumprod()
 
 # -------------------------------------------------
-# GRAFİK
+# GRAFİK SETUP
 # -------------------------------------------------
 rows = 1
 row_heights = [0.7]
@@ -110,58 +109,17 @@ fig = make_subplots(
 )
 
 # -------------------------------------------------
-# ANA GRAFİK
+# ANA GRAFİK – PORTFÖY (INDEX)
 # -------------------------------------------------
-if chart_type == "Heikin Ashi":
-    ha_close = portfolio_df[["Open", "High", "Low", "Close"]].mean(axis=1)
-    ha_open = ha_close.copy()
-    ha_open.iloc[0] = portfolio_df["Open"].iloc[0]
-
-    for i in range(1, len(ha_open)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-
-    ha_high = pd.concat(
-        [portfolio_df["High"], ha_open, ha_close], axis=1
-    ).max(axis=1)
-
-    ha_low = pd.concat(
-        [portfolio_df["Low"], ha_open, ha_close], axis=1
-    ).min(axis=1)
-
-    fig.add_trace(
-        go.Candlestick(
-            x=portfolio_df.index,
-            open=ha_open,
-            high=ha_high,
-            low=ha_low,
-            close=ha_close,
-            name="Heikin Ashi Portföy"
-        ),
-        row=1, col=1
-    )
-
-elif chart_type == "Çizgi Grafik":
-    fig.add_trace(
-        go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Close"],
-            name="Portföy"
-        ),
-        row=1, col=1
-    )
-
-else:
-    fig.add_trace(
-        go.Candlestick(
-            x=portfolio_df.index,
-            open=portfolio_df["Open"],
-            high=portfolio_df["High"],
-            low=portfolio_df["Low"],
-            close=portfolio_df["Close"],
-            name="Portföy"
-        ),
-        row=1, col=1
-    )
+fig.add_trace(
+    go.Scatter(
+        x=port_index.index,
+        y=port_index,
+        name="Portföy (Index)",
+        line=dict(width=2)
+    ),
+    row=1, col=1
+)
 
 # -------------------------------------------------
 # EMA
@@ -169,8 +127,8 @@ else:
 if show_ema:
     fig.add_trace(
         go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Close"].ewm(span=ema1_val).mean(),
+            x=port_index.index,
+            y=port_index.ewm(span=ema1_val).mean(),
             name=f"EMA {ema1_val}"
         ),
         row=1, col=1
@@ -178,56 +136,42 @@ if show_ema:
 
     fig.add_trace(
         go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Close"].ewm(span=ema2_val).mean(),
+            x=port_index.index,
+            y=port_index.ewm(span=ema2_val).mean(),
             name=f"EMA {ema2_val}"
         ),
         row=1, col=1
     )
 
 # -------------------------------------------------
-# BENCHMARK (SPY) – RETURN BASED (DOĞRU YÖNTEM)
+# BENCHMARK (SPY) – DOĞRU VE NET
 # -------------------------------------------------
 if show_benchmark and "SPY" in prices_all["Close"].columns:
 
-    # Portföyün ilk günü
-    start_date = portfolio_df.index.min()
-
-    # --- PORTFÖY GETİRİSİ ---
-    port_ret = portfolio_df["Close"].pct_change().fillna(0)
-    port_index = (1 + port_ret).cumprod()
-
-    # --- SPY GETİRİSİ ---
     spy_prices = prices_all["Close"]["SPY"].dropna()
-    spy_prices = spy_prices.loc[start_date:]
+    spy_prices = spy_prices.loc[port_index.index.min():]
 
     spy_ret = spy_prices.pct_change().fillna(0)
     spy_index = (1 + spy_ret).cumprod()
 
-    # Tarihleri kesişime al (ÇOK ÖNEMLİ)
     common_index = port_index.index.intersection(spy_index.index)
-
-    port_index = port_index.loc[common_index]
-    spy_index = spy_index.loc[common_index]
 
     fig.add_trace(
         go.Scatter(
-            x=spy_index.index,
-            y=spy_index,
+            x=common_index,
+            y=spy_index.loc[common_index],
             name="S&P 500 (SPY)",
             line=dict(dash="dash", width=2)
         ),
         row=1, col=1
     )
 
-
-
 # -------------------------------------------------
 # RSI
 # -------------------------------------------------
 current_row = 2
 if show_rsi:
-    delta = portfolio_df["Close"].diff()
+    delta = port_index.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -237,7 +181,7 @@ if show_rsi:
     rsi = 100 - (100 / (1 + avg_gain / avg_loss))
 
     fig.add_trace(
-        go.Scatter(x=portfolio_df.index, y=rsi, name="RSI"),
+        go.Scatter(x=port_index.index, y=rsi, name="RSI"),
         row=current_row, col=1
     )
     current_row += 1
@@ -246,14 +190,11 @@ if show_rsi:
 # DRAWDOWN
 # -------------------------------------------------
 if show_drawdown:
-    dd = (
-        (portfolio_df["Close"] - portfolio_df["Close"].cummax())
-        / portfolio_df["Close"].cummax()
-    ) * 100
+    dd = (port_index / port_index.cummax() - 1) * 100
 
     fig.add_trace(
         go.Scatter(
-            x=portfolio_df.index,
+            x=port_index.index,
             y=dd,
             fill="tozeroy",
             name="Drawdown %"
