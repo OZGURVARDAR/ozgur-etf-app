@@ -66,12 +66,49 @@ df["Low"] = df[["Open", "Close"]].min(axis=1)
 df.dropna(inplace=True)
 
 # -------------------------------------------------
-# RETURN INDEX (BENCHMARK İÇİN)
+# BENCHMARK (SPY) – NORMALIZE EDİLMİŞ (% BASE 100)
 # -------------------------------------------------
-port_index = (1 + df["Close"].pct_change().fillna(0)).cumprod()
+if show_benchmark and "SPY" in prices_all["Close"].columns:
 
-spy = prices["SPY"].loc[port_index.index.min():]
-spy_index = (1 + spy.pct_change().fillna(0)).cumprod()
+    # --- PORTFÖY GETİRİ ENDESKİ ---
+    port_ret = portfolio_df["Close"].pct_change().fillna(0)
+    port_index = (1 + port_ret).cumprod() * 100
+
+    # --- SPY GETİRİ ENDESKİ ---
+    spy_prices = prices_all["Close"]["SPY"].dropna()
+
+    # Portföyün başladığı tarihten sonrası
+    spy_prices = spy_prices.loc[port_index.index.min():]
+
+    spy_ret = spy_prices.pct_change().fillna(0)
+    spy_index = (1 + spy_ret).cumprod() * 100
+
+    # --- TARİH KESİŞİMİ (EN KRİTİK NOKTA) ---
+    common_index = port_index.index.intersection(spy_index.index)
+    port_index = port_index.loc[common_index]
+    spy_index = spy_index.loc[common_index]
+
+    # --- GRAFİK ---
+    fig.add_trace(
+        go.Scatter(
+            x=port_index.index,
+            y=port_index,
+            name="Portföy (Base 100)",
+            line=dict(width=2)
+        ),
+        row=2 if show_rsi else 1, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=spy_index.index,
+            y=spy_index,
+            name="S&P 500 (SPY – Base 100)",
+            line=dict(dash="dash", width=2)
+        ),
+        row=2 if show_rsi else 1, col=1
+    )
+
 
 # -------------------------------------------------
 # FIGURE
