@@ -16,7 +16,6 @@ chart_type = st.sidebar.selectbox(
     ["Mum Grafiği", "Heikin Ashi", "Çizgi Grafik"]
 )
 
-st.sidebar.markdown("---")
 show_ema = st.sidebar.checkbox("EMA'ları Göster", True)
 ema1_val = st.sidebar.number_input("EMA 1", value=20)
 ema2_val = st.sidebar.number_input("EMA 2", value=50)
@@ -24,12 +23,12 @@ ema2_val = st.sidebar.number_input("EMA 2", value=50)
 show_benchmark = st.sidebar.checkbox("Benchmark (SPY)", True)
 
 # -------------------------------------------------
-# DATA
+# GOOGLE SHEET
 # -------------------------------------------------
 sheet_id = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
 url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_trades():
     df = pd.read_csv(url)
     df["Date"] = pd.to_datetime(df["Date"])
@@ -38,22 +37,24 @@ def load_trades():
 df_trades = load_trades()
 symbols = df_trades["Symbol"].unique().tolist()
 
-prices = yf.download(symbols + ["SPY"], start="2020-01-01", progress=False)["Close"]
+prices = yf.download(
+    symbols + ["SPY"],
+    start="2020-01-01",
+    progress=False
+)["Close"]
 
 # -------------------------------------------------
-# PORTFÖY NAV
+# PORTFÖY HESABI (DOĞRU)
 # -------------------------------------------------
-positions = pd.DataFrame(0, index=prices.index, columns=symbols)
+positions = pd.DataFrame(0.0, index=prices.index, columns=symbols)
 
 for s in symbols:
-    qty = (
+    s_trades = (
         df_trades[df_trades["Symbol"] == s]
         .set_index("Date")
-        .reindex(prices.index)
-        .fillna(0)
-        .cumsum()
+        .reindex(prices.index, fill_value=0)
     )
-    positions[s] = qty["Quantity"]
+    positions[s] = s_trades["Quantity"].cumsum()
 
 portfolio = (positions * prices[symbols]).sum(axis=1)
 portfolio = portfolio[portfolio > 0]
@@ -65,25 +66,24 @@ df["Low"] = df[["Open", "Close"]].min(axis=1)
 df.dropna(inplace=True)
 
 # -------------------------------------------------
-# BENCHMARK RETURNS (AYRI GRAFİK)
+# RETURN INDEX (BENCHMARK İÇİN)
 # -------------------------------------------------
-spy = prices["SPY"].loc[df.index.min():]
-spy_ret = (1 + spy.pct_change().fillna(0)).cumprod()
-port_ret = (1 + df["Close"].pct_change().fillna(0)).cumprod()
+port_index = (1 + df["Close"].pct_change().fillna(0)).cumprod()
+
+spy = prices["SPY"].loc[port_index.index.min():]
+spy_index = (1 + spy.pct_change().fillna(0)).cumprod()
 
 # -------------------------------------------------
 # FIGURE
 # -------------------------------------------------
-rows = 2 if show_benchmark else 1
 fig = make_subplots(
-    rows=rows,
+    rows=2 if show_benchmark else 1,
     cols=1,
     shared_xaxes=True,
-    vertical_spacing=0.05,
-    row_heights=[0.7, 0.3] if rows == 2 else [1]
+    row_heights=[0.7, 0.3] if show_benchmark else [1]
 )
 
-# -------- MAIN PRICE GRAPH --------
+# --- MAIN PRICE ---
 if chart_type == "Mum Grafiği":
     fig.add_trace(go.Candlestick(
         x=df.index,
@@ -130,18 +130,18 @@ if show_ema:
         name=f"EMA {ema2_val}"
     ), row=1, col=1)
 
-# -------- BENCHMARK GRAPH --------
+# --- BENCHMARK ---
 if show_benchmark:
     fig.add_trace(go.Scatter(
-        x=port_ret.index,
-        y=port_ret,
-        name="Portföy Return"
+        x=port_index.index,
+        y=port_index,
+        name="Portföy Getiri"
     ), row=2, col=1)
 
     fig.add_trace(go.Scatter(
-        x=spy_ret.index,
-        y=spy_ret,
-        name="SPY Return",
+        x=spy_index.index,
+        y=spy_index,
+        name="SPY Getiri",
         line=dict(dash="dash")
     ), row=2, col=1)
 
@@ -153,7 +153,7 @@ fig.update_layout(
     height=900,
     xaxis_rangeslider_visible=False
 )
-fig.update_yaxes(side="right")
 fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+fig.update_yaxes(side="right")
 
 st.plotly_chart(fig, use_container_width=True)
