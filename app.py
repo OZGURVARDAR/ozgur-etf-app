@@ -186,34 +186,40 @@ if show_ema:
     )
 
 # -------------------------------------------------
-# BENCHMARK (SPY)
+# BENCHMARK (SPY) – RETURN BASED (DOĞRU YÖNTEM)
 # -------------------------------------------------
 if show_benchmark and "SPY" in prices_all["Close"].columns:
 
-    # Portföyün ilk gerçek tarihi
+    # Portföyün ilk günü
     start_date = portfolio_df.index.min()
 
-    # SPY kapanış fiyatları
-    spy = prices_all["Close"]["SPY"].dropna()
+    # --- PORTFÖY GETİRİSİ ---
+    port_ret = portfolio_df["Close"].pct_change().fillna(0)
+    port_index = (1 + port_ret).cumprod()
 
-    # Portföy başlangıcından itibaren al
-    spy = spy.loc[start_date:]
+    # --- SPY GETİRİSİ ---
+    spy_prices = prices_all["Close"]["SPY"].dropna()
+    spy_prices = spy_prices.loc[start_date:]
 
-    # Portföy tarihleriyle hizala
-    spy = spy.reindex(portfolio_df.index).ffill()
+    spy_ret = spy_prices.pct_change().fillna(0)
+    spy_index = (1 + spy_ret).cumprod()
 
-    # Normalize et (aynı başlangıç değeri)
-    spy_norm = spy / spy.iloc[0] * portfolio_df["Close"].iloc[0]
+    # Tarihleri kesişime al (ÇOK ÖNEMLİ)
+    common_index = port_index.index.intersection(spy_index.index)
+
+    port_index = port_index.loc[common_index]
+    spy_index = spy_index.loc[common_index]
 
     fig.add_trace(
         go.Scatter(
-            x=spy_norm.index,
-            y=spy_norm,
+            x=spy_index.index,
+            y=spy_index,
             name="S&P 500 (SPY)",
             line=dict(dash="dash", width=2)
         ),
         row=1, col=1
     )
+
 
 
 # -------------------------------------------------
