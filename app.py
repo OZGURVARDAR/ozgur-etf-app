@@ -1,60 +1,101 @@
 import pandas as pd
 import yfinance as yf
+import streamlit as st
 
-# --- LOAD DATA ---
-df = pd.read_csv("portfolio.csv")
+st.set_page_config(layout="wide")
+
+# ===============================
+# GOOGLE SHEETS'TEN VERİYİ ÇEK
+# ===============================
+SHEET_ID = "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw"
+SHEET_NAME = "Sheet1"
+
+url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
+df = pd.read_csv(url)
+
 df["Date"] = pd.to_datetime(df["Date"])
 df = df.sort_values("Date")
 
-INITIAL_CASH = 30000
-
-# --- CASH BALANCE ---
-df["cash_flow"] = df["Cash"]
-df["cash_balance"] = INITIAL_CASH + df["cash_flow"].cumsum()
-
-# --- POSITION TRACKING ---
-positions = {}
-rows = []
-
-for _, row in df.iterrows():
-    symbol = row["Symbol"]
-
-    if symbol != "CASH":
-        positions[symbol] = positions.get(symbol, 0) + row["Quantity"]
-
-    rows.append({
-        "Date": row["Date"],
-        "CashFlow": row["Cash"],
-        "CashBalance": row["cash_balance"],
-        "Positions": positions.copy()
-    })
-
-daily = pd.DataFrame(rows)
-
-# --- MARKET VALUE ---
-def market_value(date, positions):
-    total = 0
-    for sym, qty in positions.items():
-        price = yf.download(sym, start=date, end=date + pd.Timedelta(days=1))["Adj Close"]
-        if not price.empty:
-            total += qty * price.iloc[0]
-    return total
-
-daily["MarketValue"] = daily.apply(
-    lambda x: market_value(x["Date"], x["Positions"]), axis=1
+# ===============================
+# SADECE CASH FLOW'LARI AYIR
+# ===============================
+cash_flows = (
+    df[df["Symbol"] == "CASH"]
+    .groupby("Date")["Cash"]
+    .sum()
 )
 
-daily["PortfolioValue"] = daily["MarketValue"] + daily["CashBalance"]
+# ===============================
+# HİSSE POZİSYONLARINI HESAPLA
+# ===============================
+trades = df[df["Symbol"] != "CASH"]
 
-# --- TWR CALCULATION ---
-returns = []
+positions = (
+    trades
+    .groupby(["Date", "Symbol"])["Quantity"]
+    .sum()
+    .groupby(level=1)
+    .cumsum()
+    .reset_index()
+)
 
-for i in range(1, len(daily)):
-    if daily.loc[i, "CashFlow"] == 0:
-        r = (daily.loc[i, "PortfolioValue"] /
-             daily.loc[i-1, "PortfolioValue"]) - 1
-        returns.append(1 + r)
+symbols = positions["Symbol"].unique().tolist()
 
-TWR = pd.Series(returns).prod() - 1
+# ===============================
+# FİYATLARI ÇEK
+# ===============================
+start = df["Date"].min()
+end = pd.Timestamp.today()
 
-print(f"TWR: %{TWR * 100:.2f}")
+prices = yf.download(symbols, start=start, end=end, progress=False)["Adj Close"]
+
+# ===============================
+# GÜNLÜK PORTFÖY DEĞERİ
+# ===============================
+dates = prices.index
+portfolio_value = pd.Series(0.0, index=dates)
+
+for symbol in symbols:
+    qty = (
+        positions[positions["Symbol"] == symbol]
+        .set_index("Date")["Quantity"]
+        .reindex(dates)
+        .ffill()
+        .fillna(0)
+    )
+    portfolio_value += qty * prices[symbol]
+
+# ===============================
+# TWR HESABI
+# ===============================
+portfolio_df = pd.DataFrame({
+    "PortfolioValue": portfolio_value
+})
+
+portfolio_df["CashFlow"] = cash_flows.reindex(dates).fillna(0)
+
+portfolio_df["StartValue"] = (
+    portfolio_df["PortfolioValue"].shift(1)
+)
+
+portfolio_df["DailyReturn"] = (
+    (portfolio_df["PortfolioValue"] - portfolio_df["CashFlow"]) /
+    portfolio_df["StartValue"]
+)
+
+portfolio_df = portfolio_df.dropna()
+
+portfolio_df["TWR_Factor"] = 1 + portfolio_df["DailyReturn"]
+portfolio_df["TWR"] = portfolio_df["TWR_Factor"].cumprod() - 1
+
+# ===============================
+# GÖSTER
+# ===============================
+st.title("Portföy Time-Weighted Return (TWR)")
+
+st.metric(
+    "Toplam TWR",
+    f"%{portfolio_df['TWR'].iloc[-1] * 100:.2f}"
+)
+
+st.line_chart(portfolio_df["TWR"] * 100)
