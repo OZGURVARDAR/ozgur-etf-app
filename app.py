@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 
 st.set_page_config(layout="wide")
-st.title("📊 Portfolio Return (Cash Ignored – Clean Version)")
+st.title("📊 Portfolio Return (Cash Ignored – Stable Version)")
 
 # =========================
 # LOAD GOOGLE SHEETS
@@ -15,7 +15,7 @@ url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sh
 df = pd.read_csv(url)
 
 # =========================
-# CLEAN DATA (CRITICAL PART)
+# CLEAN DATA
 # =========================
 df["Quantity"] = (
     df["Quantity"]
@@ -40,30 +40,24 @@ df["Cost"] = df["Quantity"] * df["Price"]
 invested_capital = df["Cost"].sum()
 
 # =========================
-# CURRENT PRICES
-# =========================
-symbols = df["Symbol"].unique().tolist()
-
-prices = yf.download(
-    tickers=symbols,
-    period="5d",
-    auto_adjust=True,
-    progress=False
-)
-
-def get_last_price(symbol):
-    if len(symbols) == 1:
-        return prices["Close"].iloc[-1]
-    return prices[symbol]["Close"].iloc[-1]
-
-# =========================
-# CURRENT VALUE
+# CURRENT VALUE (SAFE MODE)
 # =========================
 current_value = 0.0
 
-for _, row in df.iterrows():
-    last_price = get_last_price(row["Symbol"])
-    current_value += row["Quantity"] * last_price
+symbols = df["Symbol"].unique()
+
+for symbol in symbols:
+    qty = df[df["Symbol"] == symbol]["Quantity"].sum()
+
+    ticker = yf.Ticker(symbol)
+    hist = ticker.history(period="5d")
+
+    if hist.empty:
+        st.error(f"Price not found for {symbol}")
+        st.stop()
+
+    last_price = hist["Close"].iloc[-1]
+    current_value += qty * last_price
 
 # =========================
 # RETURN
@@ -77,8 +71,6 @@ st.metric(
     "📈 Total Portfolio Return (%)",
     f"{total_return_pct:.2f}%"
 )
-
-st.divider()
 
 st.write(f"**Invested Capital:** ${invested_capital:,.2f}")
 st.write(f"**Current Value:** ${current_value:,.2f}")
