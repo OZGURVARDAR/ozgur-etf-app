@@ -30,20 +30,18 @@ url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 def load_data():
     df = pd.read_csv(url)
     df['Date'] = pd.to_datetime(df['Date'])
-    # Aynı gün aynı sembol işlemlerini birleştir
     df = df.groupby(['Date', 'Symbol'])['Quantity'].sum().reset_index()
     return df
 
-# --- ANA SÜREÇ ---
 try:
     df_trades = load_data()
     symbols = df_trades['Symbol'].unique().tolist()
     
-    # Veriyi 2020'den başlatıyoruz (5Y butonu için)
+    # 5Y butonu için 2020'den itibaren çekiyoruz
     download_list = symbols + (['SPY'] if show_benchmark else [])
     prices_all = yf.download(download_list, start="2020-01-01", interval="1d")
     
-    # PORTFÖY HESAPLAMA
+    # PORTFÖY HESAPLAMA (Tüm sütunlar için)
     portfolio_ohlc = pd.DataFrame(index=prices_all.index)
     for col in ['Open', 'High', 'Low', 'Close']:
         portfolio_ohlc[col] = 0.0
@@ -53,10 +51,10 @@ try:
             cum_qty = s_trades['Quantity'].cumsum()
             portfolio_ohlc[col] += prices_all[col][symbol] * cum_qty
 
-    # Sadece portföyün aktif olduğu günleri filtrele
+    # İşlem olmayan boş günleri temizle
     portfolio_ohlc = portfolio_ohlc[portfolio_ohlc['Close'] > 0].dropna()
     
-    # 2. GRAFİK KURGUSU (Subplots)
+    # 2. GRAFİK KURGUSU
     rows = 1
     row_heights = [0.7]
     if show_rsi: rows += 1; row_heights.append(0.15)
@@ -64,7 +62,7 @@ try:
     
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=row_heights)
 
-    # ANA GRAFİK ÇİZİMİ
+    # ANA GRAFİK
     if chart_type == "Heikin Ashi":
         ha_close = (portfolio_ohlc['Open'] + portfolio_ohlc['High'] + portfolio_ohlc['Low'] + portfolio_ohlc['Close']) / 4
         ha_open = portfolio_ohlc['Open'].copy()
@@ -76,18 +74,18 @@ try:
     else:
         fig.add_trace(go.Candlestick(x=portfolio_ohlc.index, open=portfolio_ohlc['Open'], high=portfolio_ohlc['High'], low=portfolio_ohlc['Low'], close=portfolio_ohlc['Close'], name="Portföy"), row=1, col=1)
 
-    # EMA GÖSTERGELERİ
+    # EMA'LAR
     if show_ema:
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['Close'].ewm(span=ema1_val).mean(), line=dict(color='#2962ff', width=0.8), name=f"EMA {ema1_val}"), row=1, col=1)
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=portfolio_ohlc['Close'].ewm(span=ema2_val).mean(), line=dict(color='#ff9800', width=0.8), name=f"EMA {ema2_val}"), row=1, col=1)
 
-    # BENCHMARK (S&P 500) - DOĞRU HİZALAMA
+    # BENCHMARK (S&P 500) - SABİTLENDİ
     if show_benchmark and 'SPY' in prices_all['Close']:
         spy_prices = prices_all['Close']['SPY'].reindex(portfolio_ohlc.index).ffill()
         bench_norm = (spy_prices / spy_prices.iloc[0]) * portfolio_ohlc['Close'].iloc[0]
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=bench_norm, line=dict(color='rgba(255,255,255,0.4)', width=1, dash='dash'), name="S&P 500 (SPY)"), row=1, col=1)
 
-    # RSI & DRAWDOWN ALT GRAFİKLER
+    # RSI & DRAWDOWN
     curr_row = 2
     if show_rsi:
         delta = portfolio_ohlc['Close'].diff()
@@ -98,12 +96,11 @@ try:
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=curr_row, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=curr_row, col=1)
         curr_row += 1
-    
     if show_drawdown:
         dd = (portfolio_ohlc['Close'] - portfolio_ohlc['Close'].cummax()) / portfolio_ohlc['Close'].cummax() * 100
         fig.add_trace(go.Scatter(x=portfolio_ohlc.index, y=dd, fill='tozeroy', line=dict(color='#f44336', width=0.5), name="Drawdown %"), row=curr_row, col=1)
 
-    # ZAMAN BUTONLARI VE TATİL GÜNLERİ
+    # BUTONLAR VE TATİL GÜNLERİ
     dt_all = pd.date_range(start=portfolio_ohlc.index.min(), end=portfolio_ohlc.index.max())
     dt_breaks = [d.strftime("%Y-%m-%d") for d in dt_all if d not in portfolio_ohlc.index]
 
