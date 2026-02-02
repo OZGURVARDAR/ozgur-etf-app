@@ -1,4 +1,3 @@
-# modules/stocks_chart.py
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -51,7 +50,8 @@ def show():
     if chart_type == "Heiken Ashi" or chart_type == "Candlestick":
         df_ha = portfolio_daily.copy()
         df_ha["HA_Close"] = (df_ha["Total Value"] + df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0])) / 2
-        df_ha["HA_Open"] = (df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0]) + df_ha["Total Value"].shift(2).fillna(df_ha["Total Value"].iloc[0])) / 2
+        df_ha["HA_Open"] = (df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0]) + 
+                            df_ha["Total Value"].shift(2).fillna(df_ha["Total Value"].iloc[0])) / 2
         df_ha["HA_High"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].max(axis=1)
         df_ha["HA_Low"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].min(axis=1)
 
