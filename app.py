@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
+import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("📈 Portfolio Performance & Stock Contribution Analysis with Cash + Benchmark")
+st.title("📈 Portfolio Performance & Stock Contribution Analysis with Cash + Benchmark (Graph)")
 
 # --- GOOGLE SHEETS CSV LINK ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
@@ -77,10 +78,9 @@ for symbol in symbols:
     })
 
 # --- CASH ---
-cash_value = df[df["Symbol"]=="CASH"]["Cost"].sum()
-# Sadece hisseler toplamı
-total_stock_value = sum([row['Current Value'] for row in rows if row['Symbol'] != "CASH"])
-cash_remaining = current_value - total_stock_value
+cash_row = df[df["Symbol"]=="CASH"]
+cash_value = cash_row["Cost"].sum() if not cash_row.empty else 0
+cash_remaining = cash_value
 cash_ratio_pct = (cash_remaining / current_value * 100) if current_value != 0 else 0
 
 # --- TOTAL RETURN (EXCLUDE CASH) ---
@@ -99,8 +99,8 @@ st.subheader("🧩 Stock Contribution Analysis with Cash")
 contrib_df = pd.DataFrame(rows).sort_values("Total Change", ascending=False)
 st.dataframe(contrib_df, use_container_width=True)
 
-# --- BENCHMARK COMPARISON ---
-st.subheader("📈 Portfolio vs Benchmarks")
+# --- BENCHMARK + PORTFOLIO GRAPH ---
+st.subheader("📈 Portfolio vs Benchmarks (Graph)")
 
 benchmarks = {
     "US500": "^GSPC",
@@ -117,33 +117,47 @@ timeframes = {
     "ALL": None
 }
 
-benchmark_returns = {}
-portfolio_returns = {}
+# PORTFOLIO DAILY VALUE
+portfolio_daily = df.groupby("Date").apply(
+    lambda x: sum(x[x["Symbol"]!="CASH"]["Quantity"]*x[x["Symbol"]!="CASH"]["Price"]) +
+              sum(x[x["Symbol"]=="CASH"]["Cost"])
+).rename("Portfolio Value")
 
-today = pd.Timestamp.today()
+portfolio_daily = portfolio_daily.sort_index()
 
-for tf_name, days in timeframes.items():
-    if tf_name == "YTD":
-        start_date = pd.Timestamp(today.year,1,1)
-    elif days is None:
-        start_date = df["Date"].min()
-    else:
-        start_date = today - pd.Timedelta(days=days)
+# --- PLOTLY GRAPH ---
+fig = go.Figure()
 
-    start_portfolio_df = df[df["Date"] <= start_date]
-    portfolio_returns[tf_name] = total_return_pct  # Proxy for portfolio
+# Portfolio line
+fig.add_trace(go.Scatter(
+    x=portfolio_daily.index,
+    y=portfolio_daily.values,
+    mode='lines+markers',
+    name='Portfolio',
+    line=dict(color='blue')
+))
 
-    bench_tf = {}
-    for name, ticker in benchmarks.items():
-        data = yf.download(ticker, period="1y" if days is None else f"{days}d", progress=False)["Close"]
-        if isinstance(data, pd.DataFrame):
-            data = data.iloc[:,0]  # Tek sütunlu ise Series’e çevir
-        if len(data) < 2:
-            bench_tf[name] = 0
-        else:
-            bench_tf[name] = (data.iloc[-1] - data.iloc[0]) / data.iloc[0] * 100
-    benchmark_returns[tf_name] = bench_tf
+# Benchmarks
+for name, ticker in benchmarks.items():
+    # ALL için portföye uyan tarih aralığı
+    start_date = portfolio_daily.index.min()
+    end_date = portfolio_daily.index.max()
+    data = yf.download(ticker, start=start_date, end=end_date, progress=False)["Close"]
+    if isinstance(data, pd.DataFrame):
+        data = data.iloc[:,0]
+    fig.add_trace(go.Scatter(
+        x=data.index,
+        y=data.values,
+        mode='lines',
+        name=name
+    ))
 
-bench_table = pd.DataFrame(benchmark_returns).T
-bench_table.index.name = "Timeframe"
-st.table(bench_table.style.format("{:.2f}%"))
+fig.update_layout(
+    title="Portfolio vs Benchmarks",
+    xaxis_title="Date",
+    yaxis_title="Value ($)",
+    legend_title="Legend",
+    height=500
+)
+
+st.plotly_chart(fig, use_container_width=True)
