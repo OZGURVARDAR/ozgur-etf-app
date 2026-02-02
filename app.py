@@ -2,12 +2,15 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
+# --- PAGE CONFIG ---
 st.set_page_config(layout="wide")
-
 st.title("📈 Portfolio Return (Clean Version)")
 
 # --- GOOGLE SHEETS CSV LINK ---
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
+SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
+)
 
 # --- LOAD DATA ---
 df = pd.read_csv(SHEET_URL)
@@ -17,11 +20,12 @@ df["Date"] = pd.to_datetime(df["Date"])
 df["Quantity"] = pd.to_numeric(df["Quantity"], errors="raise")
 df["Price"] = pd.to_numeric(df["Price"], errors="raise")
 
+# CASH satırlarını hariç tut
 df = df[df["Symbol"] != "CASH"]
 
 # --- INVESTED CAPITAL (NET COST BASIS) ---
 df["Cost"] = df["Quantity"] * df["Price"]
-invested_capital = df[df["Quantity"] > 0]["Cost"].sum()
+invested_capital = df.loc[df["Quantity"] > 0, "Cost"].sum()
 
 # --- CURRENT VALUE ---
 symbols = df["Symbol"].unique().tolist()
@@ -35,17 +39,19 @@ prices = yf.download(
 if isinstance(prices, pd.Series):
     prices = prices.to_frame()
 
-def last_price(symbol):
+def get_last_price(symbol: str) -> float:
     return prices[symbol].dropna().iloc[-1]
 
 current_value = 0.0
 
 for symbol in symbols:
-    net_qty = df[df["Symbol"] == symbol]["Quantity"].sum()
-    current_value += net_qty * last_price(symbol)
+    net_quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
+    current_value += net_quantity * get_last_price(symbol)
 
 # --- RETURN ---
-total_return_pct = (current_value - invested_capital) / invested_capital * 100
+total_return_pct = (
+    (current_value - invested_capital) / invested_capital * 100
+)
 
 # --- OUTPUT ---
 st.metric("Invested Capital ($)", f"{invested_capital:,.2f}")
