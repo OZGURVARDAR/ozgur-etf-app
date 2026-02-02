@@ -2,99 +2,90 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 def show():
-    st.subheader("🛡️ Portfolio Performance Index (Base 100)")
+    st.subheader("📊 Portfolio Performance Index (100 Base)")
 
     # --- SIDEBAR ---
-    chart_mode = st.sidebar.selectbox("Grafik Türü", ["Candlestick", "Line", "Heiken Ashi"])
-    show_rsi = st.sidebar.checkbox("RSI Göster", value=True)
-
+    chart_mode = st.sidebar.selectbox("Grafik Türü", ["Line", "Candlestick", "Heiken Ashi"])
+    
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 
     @st.cache_data(ttl=300)
-    def load_data():
+    def get_data():
         df = pd.read_csv(SHEET_URL)
         df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
-        return df[df["Symbol"] != "CASH"].sort_values('Date')
+        # Sadece hisseleri al
+        trades = df[df["Symbol"] != "CASH"].sort_values('Date').copy()
+        return trades
 
-    trades = load_data()
+    trades = get_data()
     symbols = trades["Symbol"].unique().tolist()
-    first_trade_date = trades['Date'].min() # 18.11.2025
+    # İlk gerçek alım tarihi: 18.11.2025
+    start_date = trades['Date'].min()
 
-    # --- DATA FETCHING ---
-    with st.spinner('Fiyatlar güncelleniyor...'):
-        # Veriyi ilk işlem tarihinden başlatıyoruz
-        data = yf.download(symbols, start=first_trade_date, interval="1d", group_by='ticker', progress=False)
+    # --- VERİ ÇEKME ---
+    with st.spinner('Piyasa verileri senkronize ediliyor...'):
+        data = yf.download(symbols, start=start_date, interval="1d", group_by='ticker', progress=False)
 
-    # --- PORTFOLIO CALCULATION ---
-    daily_values = []
-    all_trading_days = data.index.normalize()
-
-    for date in all_trading_days:
-        mkt_val = 0.0
-        # O tarihe kadar sahip olunan toplam adetleri hesapla
-        current_status = trades[trades['Date'] <= date]
+    # --- PORTFÖYÜN GÜNLÜK DEĞERİ ---
+    daily_summary = []
+    
+    # Yahoo'dan gelen tüm işlem günlerini tara
+    for current_date in data.index:
+        # O tarihe kadar elimizde olan hisseleri ve toplam maliyeti bul
+        current_trades = trades[trades['Date'] <= current_date]
+        
+        total_market_value = 0.0
+        total_invested_capital = 0.0 # O güne kadar yatırılan toplam ana para
         
         for sym in symbols:
-            sym_trades = current_status[current_status['Symbol'] == sym]
-            if not sym_trades.empty:
-                qty = sym_trades['Quantity'].sum()
+            s_trades = current_trades[current_trades['Symbol'] == sym]
+            if not s_trades.empty:
+                qty = s_trades['Quantity'].sum()
+                cost = (s_trades['Quantity'] * s_trades['Price']).sum()
+                
                 try:
-                    # O günkü kapanış fiyatı
-                    price_series = data[sym]['Close'] if len(symbols) > 1 else data['Close']
-                    price = price_series.loc[date]
-                    if pd.isna(price): price = price_series.asof(date) # Tatilse son fiyat
-                    mkt_val += qty * price
+                    price_col = data[sym]['Close'] if len(symbols) > 1 else data['Close']
+                    current_price = price_col.asof(current_date) # O gün fiyat yoksa son fiyatı al
+                    
+                    total_market_value += qty * current_price
+                    total_invested_capital += cost
                 except: continue
         
-        if mkt_val > 0:
-            daily_values.append({'Date': date, 'MarketValue': mkt_val})
+        if total_invested_capital > 0:
+            # Kar/Zarar Oranı üzerinden Endeksle
+            # (Piyasa Değeri / Maliyet) * 100
+            # Bu formül direkt olarak %11.04 kârı -> 111.04 Endeks puanı yapar.
+            nav_index = (total_market_value / total_invested_capital) * 100
+            daily_summary.append({'Date': current_date, 'NAV': nav_index})
 
-    df_results = pd.DataFrame(daily_values).set_index('Date')
+    df_nav = pd.DataFrame(daily_summary).set_index('Date')
+    # Günlük mumlara çevir
+    df_ohlc = df_nav['NAV'].resample('B').ohlc().dropna()
 
-    # --- INDEXING (BASE 100) ---
-    # İlk günkü toplam değeri 100'e eşitliyoruz
-    base_val = df_results['MarketValue'].iloc[0]
-    df_results['NAV'] = (df_results['MarketValue'] / base_val) * 100
+    # --- GÖRSELLEŞTİRME ---
+    fig = go.Figure()
+    x_axis = df_ohlc.index.strftime('%d %b %y')
 
-    # Resample to OHLC (Günlük Mumlar)
-    df_ohlc = df_results['NAV'].resample('B').ohlc().dropna()
-
-    # --- CHARTING ---
-    rows = 2 if show_rsi else 1
-    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05)
-    
-    # X ekseni etiketlerini temizle
-    x_axis = df_ohlc.index.strftime('%Y-%m-%d')
-
-    if chart_mode == "Candlestick":
-        fig.add_trace(go.Candlestick(x=x_axis, open=df_ohlc['open'], high=df_ohlc['high'], 
-                                     low=df_ohlc['low'], close=df_ohlc['close'], name="Index"), row=1, col=1)
-    elif chart_mode == "Heiken Ashi":
-        ha_c = (df_ohlc['open'] + df_ohlc['high'] + df_ohlc['low'] + df_ohlc['close']) / 4
-        ha_o = (df_ohlc['open'].shift(1) + df_ohlc['close'].shift(1)) / 2
-        ha_o.iloc[0] = df_ohlc['open'].iloc[0]
-        fig.add_trace(go.Candlestick(x=x_axis, open=ha_o, high=df_ohlc['high'], low=df_ohlc['low'], close=ha_c, name="HA Index"), row=1, col=1)
+    if chart_mode == "Line":
+        fig.add_trace(go.Scatter(x=x_axis, y=df_ohlc['close'], line=dict(color='#00E676', width=3), name="Portfolio Performance"))
     else:
-        fig.add_trace(go.Scatter(x=x_axis, y=df_ohlc['close'], line=dict(color='#2962FF', width=2), name="Index Line"), row=1, col=1)
+        fig.add_trace(go.Candlestick(x=x_axis, open=df_ohlc['open'], high=df_ohlc['high'], low=df_ohlc['low'], close=df_ohlc['close'], name="Portfolio NAV"))
 
-    # RSI (Opsiyonel)
-    if show_rsi:
-        delta = df_ohlc['close'].diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi = 100 - (100 / (1 + (gain/loss)))
-        fig.add_trace(go.Scatter(x=x_axis, y=rsi, name="RSI", line=dict(color='purple')), row=2, col=1)
-
-    # Format
-    fig.update_layout(height=700, template="plotly_white", xaxis_rangeslider_visible=False)
-    fig.update_yaxes(title_text="Portfolio Index (Start=100)", tickformat=".2f", row=1, col=1)
+    # Y-Ekseni Ayarı: 19k-20k yerine gerçek rakamları göster
+    fig.update_yaxes(title_text="Performance Index (Base 100)", tickformat=".2f")
     fig.update_xaxes(type='category', nticks=15)
     
+    fig.update_layout(
+        height=600,
+        template="plotly_dark", # TradingView tarzı koyu tema
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=50, r=20, t=20, b=20)
+    )
+
     st.plotly_chart(fig, use_container_width=True)
 
-    # Doğrulama Mesajı
-    current_index = df_ohlc['close'].iloc[-1]
-    st.success(f"Güncel Endeks Değeri: {current_index:.2f} (Bu, başlangıçtan beri %{current_index-100:.2f} kârda olduğunuzu gösterir.)")
+    # Özet Metrikler
+    last_val = df_ohlc['close'].iloc[-1]
+    st.metric("Güncel Portföy Başarısı", f"{last_val:.2f} Puan", f"%{last_val-100:.2f} Toplam Getiri")
