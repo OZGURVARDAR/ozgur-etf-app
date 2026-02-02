@@ -5,74 +5,92 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 def show():
-    st.subheader("📈 Portfolio Daily OHLC Chart (Historical Accuracy)")
+    st.subheader("📊 Gerçek Zamanlı Portföy Gelişim Grafiği")
 
-    # --- SIDEBAR ---
-    chart_type = st.sidebar.selectbox("Portfolio Chart Type", ["Candlestick", "Heiken Ashi", "Line"])
-    show_rsi = st.sidebar.checkbox("Show RSI", value=True)
+    # --- SETTINGS ---
+    chart_type = st.sidebar.selectbox("Grafik Türü", ["Candlestick", "Heiken Ashi", "Line"])
+    show_rsi = st.sidebar.checkbox("RSI Göster", value=True)
     
-    # --- LOAD DATA ---
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 
     @st.cache_data(ttl=300)
-    def load_data():
+    def load_and_process_data():
         df = pd.read_csv(SHEET_URL)
-        # Tarih sütununu datetime formatına çevir
         df['Date'] = pd.to_datetime(df['Date'])
-        return df
+        # Sadece hisse senetlerini al (CASH hariç)
+        trades = df[df["Symbol"] != "CASH"].sort_values('Date').copy()
+        return trades
 
-    df_full = load_data()
-    df_stocks = df_full[df_full["Symbol"] != "CASH"].copy()
-    symbols = df_stocks["Symbol"].unique().tolist()
+    trades = load_and_process_data()
+    symbols = trades["Symbol"].unique().tolist()
 
     if not symbols:
-        st.info("No stocks found in portfolio.")
+        st.info("Portföyde hisse bulunamadı.")
         return
 
-    # --- 1. EN ESKİ ALIM TARİHİNİ BUL ---
-    first_purchase_date = df_stocks['Date'].min()
+    # --- 1. VERİ ÇEKME ---
+    first_date = trades['Date'].min()
+    with st.spinner('Borsa verileri alınıyor...'):
+        # En eski alım tarihinden bugüne kadar olan veriyi çek
+        data = yf.download(symbols, start=first_date, interval="1d", group_by='ticker', progress=False)
 
-    # --- DATA FETCHING ---
-    with st.spinner('Piyasa verileri alınıyor...'):
-        try:
-            # Günlük mumlar için 1y (1 yıl) çekip sonra ilk alım tarihine göre filtreleyeceğiz
-            data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', progress=False)
-        except Exception as e:
-            st.error(f"Veri hatası: {e}")
-            return
+    # --- 2. DİNAMİK PORTFÖY HESAPLAMA ---
+    # Her bir işlem günü için boş bir tablo oluşturuyoruz
+    portfolio_history = pd.DataFrame(index=data.index)
+    portfolio_history['Market_Value'] = 0.0
+    portfolio_history['Total_Cost'] = 0.0
 
-    # --- PORTFOLIO CALCULATION (Dinamik Adet Takibi) ---
-    # Bu kısım karmaşıktır: Her gün için o gün elimizde kaç adet olduğunu hesaplar
-    all_dates = data.index
-    portfolio_val = pd.Series(0.0, index=all_dates)
-    total_cost_basis = df_stocks['Quantity'].mul(df_stocks['Price']).sum() # Toplam Yatırımın
+    for current_date in data.index:
+        daily_market_value = 0.0
+        daily_cost_basis = 0.0
+        
+        # O tarihe kadar (dahil) yapılmış tüm alımları filtrele
+        past_trades = trades[trades['Date'] <= current_date]
+        
+        # Her hisse için o günkü toplam adedi ve maliyeti hesapla
+        for symbol in symbols:
+            symbol_trades = past_trades[past_trades['Symbol'] == symbol]
+            if not symbol_trades.empty:
+                total_qty = symbol_trades['Quantity'].sum()
+                total_cost = (symbol_trades['Quantity'] * symbol_trades['Price']).sum()
+                
+                # O günkü hisse fiyatını bul
+                try:
+                    price_col = data[symbol]['Close'] if len(symbols) > 1 else data['Close']
+                    current_price = price_col.loc[current_date]
+                    if pd.isna(current_price): # Eğer o gün veri yoksa bir önceki güne bak
+                        current_price = price_col.asof(current_date)
+                        
+                    daily_market_value += total_qty * current_price
+                    daily_cost_basis += total_cost
+                except:
+                    continue
+        
+        portfolio_history.loc[current_date, 'Market_Value'] = daily_market_value
+        portfolio_history.loc[current_date, 'Total_Cost'] = daily_cost_basis
 
-    for symbol in symbols:
-        try:
-            close_s = data[symbol]['Close'] if len(symbols) > 1 else data['Close']
-            qty = df_stocks.loc[df_stocks["Symbol"] == symbol, "Quantity"].sum()
-            portfolio_val += close_s.ffill().fillna(0) * qty
-        except: continue
+    # OHLC Verisine Dönüştür (Günlük)
+    # Market value üzerinden mumları oluşturuyoruz
+    df_plot = portfolio_history['Market_Value'].resample('B').ohlc().dropna()
+    df_cost = portfolio_history['Total_Cost'].resample('B').last().ffill()
 
-    # Veriyi sadece ilk alım tarihinden itibaren filtrele
-    df_plot = portfolio_val[portfolio_val.index >= first_purchase_date].resample('B').ohlc().dropna()
-
-    # --- CHARTING ---
+    # --- 3. GÖRSELLEŞTİRME ---
     rows = 2 if show_rsi else 1
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05)
 
-    # Piyasa Değeri (OHLC)
+    # Mum Grafiği (Piyasa Değeri)
     fig.add_trace(go.Candlestick(
         x=df_plot.index, open=df_plot['open'], high=df_plot['high'], 
-        low=df_plot['low'], close=df_plot['close'], name="Market Value"
+        low=df_plot['low'], close=df_plot['close'], name="Portföy Değeri"
     ), row=1, col=1)
 
-    # --- MALİYET ÇİZGİSİ (Total Cost) ---
-    # Karını bu çizginin üzerindeki mesafe olarak görebilirsin
-    fig.add_hline(y=total_cost_basis, line_dash="dot", line_color="gray", 
-                  annotation_text=f"Total Cost: ${total_cost_basis:,.0f}", row=1, col=1)
+    # Dinamik Maliyet Çizgisi (Her alımla beraber basamak gibi yükselir)
+    fig.add_trace(go.Scatter(
+        x=df_cost.index, y=df_cost, name="Toplam Maliyet", 
+        line=dict(color='gray', width=2, dash='dash')
+    ), row=1, col=1)
 
-    # RSI Hesaplama... (önceki kodla aynı)
+    # RSI Hesaplama
     if show_rsi:
         delta = df_plot["close"].diff()
         gain = delta.clip(lower=0).rolling(14).mean()
@@ -81,14 +99,16 @@ def show():
         df_plot["RSI"] = 100 - (100 / (1 + rs))
         fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["RSI"], name="RSI", line=dict(color='purple')), row=2, col=1)
 
-    # --- Y EKSENİ FORMATI (Burada 20k -> 20,000 oluyor) ---
-    fig.update_yaxes(tickformat=",d", title_text="Value ($)", row=1, col=1)
+    # --- FORMATLAMA (20k yerine 20,000) ---
+    fig.update_yaxes(tickformat=",d", title_text="Portföy Değeri ($)", row=1, col=1)
+    fig.update_xaxes(type='category', nticks=15)
     
     fig.update_layout(
         height=750, 
         xaxis_rangeslider_visible=False, 
         template="plotly_white",
-        margin=dict(l=20, r=20, t=20, b=20)
+        margin=dict(l=20, r=20, t=20, b=20),
+        legend=dict(orientation="h", y=1.05)
     )
     
     st.plotly_chart(fig, use_container_width=True)
