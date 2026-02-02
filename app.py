@@ -11,36 +11,21 @@ st.title("📈 Portfolio Performance & Stock Contribution Analysis with Cash + B
 STOCKS_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv&sheet=Stocks"
 CASH_URL   = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv&sheet=Cash"
 
-# --- LOAD DATA ---
+# --- LOAD STOCKS DATA ---
 stocks_df = pd.read_csv(STOCKS_URL)
 
-# --- CASH LOAD ---
-# İlk 5 satırı kontrol et
-cash_preview = pd.read_csv(CASH_URL, nrows=5, header=None)
-st.write("Cash preview (first 5 rows):", cash_preview)
-
-# Eğer B1 hücresinde Amount varsa header=0, değilse header=1 deneyelim
-try:
-    cash_df = pd.read_csv(CASH_URL, header=0)
-    if "Amount" not in cash_df.columns:
-        cash_df = pd.read_csv(CASH_URL, header=1)
-except Exception as e:
-    st.error(f"Cash CSV okunamadı: {e}")
-    st.stop()
-
-# Sütunları temizle
+# --- LOAD CASH DATA (header problemi bypass) ---
+cash_df = pd.read_csv(CASH_URL, header=None)  # header yokmuş gibi oku
+header_row = cash_df.iloc[0]                  # ilk satırı başlık olarak al
+cash_df = cash_df[1:]                         # veri kısmı
+cash_df.columns = header_row                  # sütun adlarını ata
+# temizle
 cash_df.columns = cash_df.columns.str.strip().str.replace("\n","").str.replace("\r","").str.replace("\ufeff","")
-st.write("Cash sheet columns cleaned:", cash_df.columns.tolist())
 
-# Amount sütunu kontrolü
+# Amount sütunu var mı kontrol et, yoksa index 1 al
 if "Amount" not in cash_df.columns:
-    possible = [c for c in cash_df.columns if "amount" in c.lower()]
-    if possible:
-        cash_col = possible[0]
-        st.warning(f"'Amount' column not found, using '{cash_col}' instead")
-    else:
-        st.error("Cash sheet has no 'Amount' column. Lütfen sütun adını kontrol edin!")
-        st.stop()
+    cash_col = cash_df.columns[1]
+    st.warning(f"'Amount' column not found, using column index 1: {cash_col}")
 else:
     cash_col = "Amount"
 
