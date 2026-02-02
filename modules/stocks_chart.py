@@ -2,113 +2,102 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 def show():
-    st.subheader("📊 Gerçek Zamanlı Portföy Gelişim Grafiği")
+    st.subheader("🛡️ Personal Portfolio ETF (NAV Performance)")
 
-    # --- SETTINGS ---
-    chart_type = st.sidebar.selectbox("Grafik Türü", ["Candlestick", "Heiken Ashi", "Line"])
-    show_rsi = st.sidebar.checkbox("RSI Göster", value=True)
-    
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 
     @st.cache_data(ttl=300)
-    def load_and_process_data():
+    def load_clean_data():
         df = pd.read_csv(SHEET_URL)
         df['Date'] = pd.to_datetime(df['Date'])
-        # Sadece hisse senetlerini al (CASH hariç)
-        trades = df[df["Symbol"] != "CASH"].sort_values('Date').copy()
-        return trades
+        return df.sort_values('Date')
 
-    trades = load_and_process_data()
+    df_all = load_clean_data()
+    trades = df_all[df_all["Symbol"] != "CASH"].copy()
     symbols = trades["Symbol"].unique().tolist()
 
     if not symbols:
-        st.info("Portföyde hisse bulunamadı.")
+        st.info("Portföy verisi bulunamadı.")
         return
 
-    # --- 1. VERİ ÇEKME ---
+    # --- DATA FETCHING ---
     first_date = trades['Date'].min()
-    with st.spinner('Borsa verileri alınıyor...'):
-        # En eski alım tarihinden bugüne kadar olan veriyi çek
+    with st.spinner('ETF Verileri Hesaplanıyor...'):
+        # Tüm hisselerin günlük verilerini çek
         data = yf.download(symbols, start=first_date, interval="1d", group_by='ticker', progress=False)
 
-    # --- 2. DİNAMİK PORTFÖY HESAPLAMA ---
-    # Her bir işlem günü için boş bir tablo oluşturuyoruz
-    portfolio_history = pd.DataFrame(index=data.index)
-    portfolio_history['Market_Value'] = 0.0
-    portfolio_history['Total_Cost'] = 0.0
+    # --- NAV (Birim Değer) HESAPLAMA ---
+    # Başlangıçta 100 birim paramız olduğunu varsayıyoruz (ETF mantığı)
+    nav_df = pd.DataFrame(index=data.index)
+    nav_df['Total_Market_Value'] = 0.0
+    nav_df['Daily_NAV'] = 100.0 # Başlangıç fiyatı: 100
 
-    for current_date in data.index:
-        daily_market_value = 0.0
-        daily_cost_basis = 0.0
+    current_holdings = {sym: 0 for sym in symbols}
+    
+    # Her gün için hesapla
+    for i, current_date in enumerate(data.index):
+        # 1. O günkü alım-satım işlemlerini güncelle
+        todays_trades = trades[trades['Date'].dt.date == current_date.date()]
+        for _, row in todays_trades.iterrows():
+            current_holdings[row['Symbol']] += row['Quantity']
         
-        # O tarihe kadar (dahil) yapılmış tüm alımları filtrele
-        past_trades = trades[trades['Date'] <= current_date]
-        
-        # Her hisse için o günkü toplam adedi ve maliyeti hesapla
-        for symbol in symbols:
-            symbol_trades = past_trades[past_trades['Symbol'] == symbol]
-            if not symbol_trades.empty:
-                total_qty = symbol_trades['Quantity'].sum()
-                total_cost = (symbol_trades['Quantity'] * symbol_trades['Price']).sum()
-                
-                # O günkü hisse fiyatını bul
+        # 2. Portföyün o günkü toplam piyasa değerini bul
+        market_val = 0.0
+        for sym, qty in current_holdings.items():
+            if qty > 0:
                 try:
-                    price_col = data[symbol]['Close'] if len(symbols) > 1 else data['Close']
-                    current_price = price_col.loc[current_date]
-                    if pd.isna(current_price): # Eğer o gün veri yoksa bir önceki güne bak
-                        current_price = price_col.asof(current_date)
-                        
-                    daily_market_value += total_qty * current_price
-                    daily_cost_basis += total_cost
-                except:
-                    continue
+                    price = data[sym]['Close'].loc[current_date] if len(symbols) > 1 else data['Close'].loc[current_date]
+                    if pd.isna(price): 
+                        price = data[sym]['Close'].asof(current_date) if len(symbols) > 1 else data['Close'].asof(current_date)
+                    market_val += qty * price
+                except: continue
         
-        portfolio_history.loc[current_date, 'Market_Value'] = daily_market_value
-        portfolio_history.loc[current_date, 'Total_Cost'] = daily_cost_basis
+        nav_df.loc[current_date, 'Total_Market_Value'] = market_val
+        
+        # 3. Birim Değer (Performance) Hesaplama
+        # İlk gün fiyat 100, sonraki günler piyasa değerindeki % değişime göre artar/azalır
+        if i > 0:
+            prev_date = data.index[i-1]
+            prev_val = nav_df.loc[prev_date, 'Total_Market_Value']
+            
+            # Eğer yeni alım yapıldıysa, alım miktarını değişimden arındır (ETF mantığı)
+            # Bu kısım fiyat hareketini alım hareketinden izole eder
+            if prev_val > 0:
+                # Günlük getiri oranı = (Bugünkü Değer - Yeni Alımlar) / Önceki Değer
+                new_investment = (todays_trades['Quantity'] * todays_trades['Price']).sum()
+                daily_return = (market_val - new_investment) / prev_val
+                nav_df.loc[current_date, 'Daily_NAV'] = nav_df.loc[prev_date, 'Daily_NAV'] * daily_return
+            else:
+                nav_df.loc[current_date, 'Daily_NAV'] = 100.0
 
-    # OHLC Verisine Dönüştür (Günlük)
-    # Market value üzerinden mumları oluşturuyoruz
-    df_plot = portfolio_history['Market_Value'].resample('B').ohlc().dropna()
-    df_cost = portfolio_history['Total_Cost'].resample('B').last().ffill()
+    # Mum Grafiği Oluştur (NAV üzerinden)
+    df_ohlc = nav_df['Daily_NAV'].resample('B').ohlc().dropna()
 
-    # --- 3. GÖRSELLEŞTİRME ---
-    rows = 2 if show_rsi else 1
-    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05)
+    # --- PLOTLY ---
+    fig = go.Figure()
 
-    # Mum Grafiği (Piyasa Değeri)
     fig.add_trace(go.Candlestick(
-        x=df_plot.index, open=df_plot['open'], high=df_plot['high'], 
-        low=df_plot['low'], close=df_plot['close'], name="Portföy Değeri"
-    ), row=1, col=1)
+        x=df_ohlc.index,
+        open=df_ohlc['open'], high=df_ohlc['high'],
+        low=df_ohlc['low'], close=df_ohlc['close'],
+        name="Portfolio NAV"
+    ))
 
-    # Dinamik Maliyet Çizgisi (Her alımla beraber basamak gibi yükselir)
-    fig.add_trace(go.Scatter(
-        x=df_cost.index, y=df_cost, name="Toplam Maliyet", 
-        line=dict(color='gray', width=2, dash='dash')
-    ), row=1, col=1)
-
-    # RSI Hesaplama
-    if show_rsi:
-        delta = df_plot["close"].diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rs = gain / loss
-        df_plot["RSI"] = 100 - (100 / (1 + rs))
-        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["RSI"], name="RSI", line=dict(color='purple')), row=2, col=1)
-
-    # --- FORMATLAMA (20k yerine 20,000) ---
-    fig.update_yaxes(tickformat=",d", title_text="Portföy Değeri ($)", row=1, col=1)
+    # Y-Ekseni Formatı
+    fig.update_yaxes(title_text="ETF Birim Fiyatı (Baz: 100)", tickformat=".2f")
     fig.update_xaxes(type='category', nticks=15)
     
     fig.update_layout(
-        height=750, 
-        xaxis_rangeslider_visible=False, 
+        height=600,
+        title="Kişisel Portföy Performans Grafiği (ETF Style)",
+        xaxis_rangeslider_visible=False,
         template="plotly_white",
-        margin=dict(l=20, r=20, t=20, b=20),
-        legend=dict(orientation="h", y=1.05)
+        margin=dict(l=20, r=20, t=50, b=20)
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Bilgi Paneli
+    st.info("💡 Bu grafik portföyünüzü bir ETF gibi takip eder. Yeni nakit girişleri (alım) grafiği yukarı zıplatmaz, sadece hisselerinizin performansını gösterir.")
