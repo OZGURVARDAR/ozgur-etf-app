@@ -69,12 +69,11 @@ for symbol in symbols:
     })
 
 # --- CASH ---
-# Sütun adlarını normalize et ve olası isim farklarını yakala
-cash_df.columns = cash_df.columns.str.strip().str.replace("\n","").str.replace("\r","")
-if "Amount" in cash_df.columns:
-    cash_col = "Amount"
-else:
-    # Amount benzeri bir sütun bul
+# Sütun adlarını temizle (BOM, boşluk, gizli karakter)
+cash_df.columns = cash_df.columns.str.strip().str.replace("\n","").str.replace("\r","").str.replace("\ufeff","")
+
+# Amount sütunu kontrolü ve seçimi
+if "Amount" not in cash_df.columns:
     possible = [c for c in cash_df.columns if "amount" in c.lower()]
     if possible:
         cash_col = possible[0]
@@ -82,6 +81,8 @@ else:
     else:
         st.error("Cash sheet has no 'Amount' column. Lütfen sütun adını kontrol edin!")
         st.stop()
+else:
+    cash_col = "Amount"
 
 cash_df[cash_col] = pd.to_numeric(cash_df[cash_col], errors="raise")
 cash_remaining = cash_df[cash_col].sum()
