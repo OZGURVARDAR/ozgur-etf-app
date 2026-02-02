@@ -69,17 +69,24 @@ def show():
         st.metric(
             label=f"{row['Symbol']} - Current Value ($)",
             value=f"{row['Current Value ($)']:,.2f}",
-            delta=f"{row['Total P/L (%)']:.2f}%"
+            delta=f"{row['Total P/L (%)']:.2f}%",
         )
 
-    st.subheader("💹 Detailed Stocks Table")
-    st.dataframe(stocks_df.style.format({
-        "Total Cost ($)": "{:,.2f}",
-        "Current Price ($)": "{:,.2f}",
-        "Current Value ($)": "{:,.2f}",
-        "Total P/L ($)": "{:,.2f}",
-        "Total P/L (%)": "{:.2f}%",
-        "Daily Change ($)": "{:,.2f}",
-        "Daily Change (%)": "{:.2f}%"
-    }))
+    # --- COLOR FORMATTING FUNCTION ---
+    def color_profit(val):
+        color = 'green' if val > 0 else 'red' if val < 0 else 'black'
+        return f'color: {color}'
 
+    # --- DETAILED TABLE ---
+    st.subheader("💹 Detailed Stocks Table")
+    st.dataframe(
+        stocks_df.style.format({
+            "Total Cost ($)": "{:,.2f}",
+            "Current Price ($)": "{:,.2f}",
+            "Current Value ($)": "{:,.2f}",
+            "Total P/L ($)": "{:,.2f}",
+            "Total P/L (%)": "{:.2f}%",
+            "Daily Change ($)": "{:,.2f}",
+            "Daily Change (%)": "{:.2f}%"
+        }).applymap(color_profit, subset=["Total P/L ($)", "Total P/L (%)", "Daily Change ($)", "Daily Change (%)"])
+    )
