@@ -53,25 +53,19 @@ def show():
 
     stocks_df = pd.DataFrame(stock_data)
 
-    # --- TOTAL PORTFOLIO METRICS ---
+    # --- CALCULATE TOTAL PORTFOLIO METRICS ---
     total_cost = stocks_df["Total Cost ($)"].sum()
     total_current_value = stocks_df["Current Value ($)"].sum()
     total_pl = total_current_value - total_cost
     total_pl_pct = (total_pl / total_cost * 100) if total_cost != 0 else 0
 
-    total_row = pd.DataFrame({
-        "Symbol": ["TOTAL"],
-        "Quantity": [np.nan],
-        "Total Cost ($)": [total_cost],
-        "Current Price ($)": [np.nan],
-        "Current Value ($)": [total_current_value],
-        "Total P/L ($)": [total_pl],
-        "Total P/L (%)": [total_pl_pct],
-        "Daily Change ($)": [np.nan],
-        "Daily Change (%)": [np.nan]
-    })
-
-    stocks_df = pd.concat([stocks_df, total_row], ignore_index=True)
+    # --- SHOW TOTAL PORTFOLIO METRICS ---
+    st.subheader("💰 Total Portfolio Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Cost ($)", f"{total_cost:,.2f}")
+    col2.metric("Current Value ($)", f"{total_current_value:,.2f}")
+    col3.metric("Total P/L ($)", f"{total_pl:,.2f}")
+    col4.metric("Total P/L (%)", f"{total_pl_pct:.2f}%")
 
     # --- COLOR FORMATTING ---
     def color_profit(val):
@@ -82,6 +76,7 @@ def show():
                 return 'color: red'
         return 'color: black'
 
+    # --- DETAILED TABLE ---
     st.subheader("💹 Detailed Stocks Table")
     st.dataframe(
         stocks_df.style.format({
@@ -92,5 +87,6 @@ def show():
             "Total P/L (%)": "{:.2f}%",
             "Daily Change ($)": "{:,.2f}",
             "Daily Change (%)": "{:.2f}%"
-        }).applymap(color_profit, subset=["Total P/L ($)", "Total P/L (%)", "Daily Change ($)", "Daily Change (%)"])
+        }).applymap(color_profit, subset=["Total P/L ($)", "Total P/L (%)", "Daily Change ($)", "Daily Change (%)"]),
+        use_container_width=True
     )
