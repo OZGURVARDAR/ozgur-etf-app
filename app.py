@@ -69,6 +69,8 @@ for symbol in symbols:
     })
 
 # --- CASH ---
+# Sütun adlarını normalize et
+cash_df.columns = cash_df.columns.str.strip().str.replace("\n","")
 cash_df["Amount"] = pd.to_numeric(cash_df["Amount"], errors="raise")
 cash_remaining = cash_df["Amount"].sum()
 cash_ratio_pct = (cash_remaining / (current_value + cash_remaining) * 100) if (current_value + cash_remaining) != 0 else 0
