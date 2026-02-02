@@ -1,6 +1,6 @@
 import streamlit as st
-from modules import stocks      # Tablo + toplam portföy metricleri
-from modules import stocks_chart  # Interaktif grafikler (Candlestick + SMA/EMA + ATH + RSI)
+from modules import stocks          # Tablo + toplam portföy metricleri
+from modules import stocks_chart    # Portföyün günlük değer grafiği
 
 # --- PAGE CONFIG ---
 st.set_page_config(layout="wide")
@@ -13,5 +13,5 @@ if tab == "Stocks":
     # --- STOCKS TABLO VE METRICLER ---
     stocks.show()
 
-    # --- STOCKS INTERAKTİF GRAFİKLER ---
+    # --- PORTFÖY GRAFİĞİ TABLO ALTINDA ---
     stocks_chart.show()
