@@ -78,9 +78,10 @@ for symbol in symbols:
 
 # --- CASH ---
 cash_value = df[df["Symbol"]=="CASH"]["Cost"].sum()
-total_stock_value = sum([row['Current Value'] for row in rows])
+# Sadece hisseler toplamı
+total_stock_value = sum([row['Current Value'] for row in rows if row['Symbol'] != "CASH"])
 cash_remaining = current_value - total_stock_value
-cash_ratio_pct = (cash_remaining / current_value) * 100 if current_value != 0 else 0
+cash_ratio_pct = (cash_remaining / current_value * 100) if current_value != 0 else 0
 
 # --- TOTAL RETURN (EXCLUDE CASH) ---
 total_return_pct = (current_value - invested_capital - cash_value) / invested_capital * 100
@@ -130,17 +131,17 @@ for tf_name, days in timeframes.items():
         start_date = today - pd.Timedelta(days=days)
 
     start_portfolio_df = df[df["Date"] <= start_date]
-    # Portfolio returns still using total_return_pct as proxy
-    portfolio_returns[tf_name] = total_return_pct
+    portfolio_returns[tf_name] = total_return_pct  # Proxy for portfolio
 
-    # Benchmark Returns
     bench_tf = {}
     for name, ticker in benchmarks.items():
         data = yf.download(ticker, period="1y" if days is None else f"{days}d", progress=False)["Close"]
+        if isinstance(data, pd.DataFrame):
+            data = data.iloc[:,0]  # Tek sütunlu ise Series’e çevir
         if len(data) < 2:
             bench_tf[name] = 0
         else:
-            bench_tf[name] = (data[-1] - data[0]) / data[0] * 100
+            bench_tf[name] = (data.iloc[-1] - data.iloc[0]) / data.iloc[0] * 100
     benchmark_returns[tf_name] = bench_tf
 
 bench_table = pd.DataFrame(benchmark_returns).T
