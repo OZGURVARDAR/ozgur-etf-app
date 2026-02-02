@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
@@ -13,7 +13,39 @@ CASH_URL   = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_
 
 # --- LOAD DATA ---
 stocks_df = pd.read_csv(STOCKS_URL)
-cash_df   = pd.read_csv(CASH_URL)
+
+# --- CASH LOAD ---
+# İlk 5 satırı kontrol et
+cash_preview = pd.read_csv(CASH_URL, nrows=5, header=None)
+st.write("Cash preview (first 5 rows):", cash_preview)
+
+# Eğer B1 hücresinde Amount varsa header=0, değilse header=1 deneyelim
+try:
+    cash_df = pd.read_csv(CASH_URL, header=0)
+    if "Amount" not in cash_df.columns:
+        cash_df = pd.read_csv(CASH_URL, header=1)
+except Exception as e:
+    st.error(f"Cash CSV okunamadı: {e}")
+    st.stop()
+
+# Sütunları temizle
+cash_df.columns = cash_df.columns.str.strip().str.replace("\n","").str.replace("\r","").str.replace("\ufeff","")
+st.write("Cash sheet columns cleaned:", cash_df.columns.tolist())
+
+# Amount sütunu kontrolü
+if "Amount" not in cash_df.columns:
+    possible = [c for c in cash_df.columns if "amount" in c.lower()]
+    if possible:
+        cash_col = possible[0]
+        st.warning(f"'Amount' column not found, using '{cash_col}' instead")
+    else:
+        st.error("Cash sheet has no 'Amount' column. Lütfen sütun adını kontrol edin!")
+        st.stop()
+else:
+    cash_col = "Amount"
+
+cash_df[cash_col] = pd.to_numeric(cash_df[cash_col], errors="raise")
+cash_remaining = cash_df[cash_col].sum()
 
 # --- CLEAN STOCKS ---
 stocks_df["Date"] = pd.to_datetime(stocks_df["Date"])
@@ -68,24 +100,7 @@ for symbol in symbols:
         "Current Value": round(value,2)
     })
 
-# --- CASH ---
-# Sütun adlarını temizle (BOM, boşluk, gizli karakter)
-cash_df.columns = cash_df.columns.str.strip().str.replace("\n","").str.replace("\r","").str.replace("\ufeff","")
-
-# Amount sütunu kontrolü ve seçimi
-if "Amount" not in cash_df.columns:
-    possible = [c for c in cash_df.columns if "amount" in c.lower()]
-    if possible:
-        cash_col = possible[0]
-        st.warning(f"'Amount' column not found, using '{cash_col}' instead")
-    else:
-        st.error("Cash sheet has no 'Amount' column. Lütfen sütun adını kontrol edin!")
-        st.stop()
-else:
-    cash_col = "Amount"
-
-cash_df[cash_col] = pd.to_numeric(cash_df[cash_col], errors="raise")
-cash_remaining = cash_df[cash_col].sum()
+# --- CASH RATIO ---
 cash_ratio_pct = (cash_remaining / (current_value + cash_remaining) * 100) if (current_value + cash_remaining) != 0 else 0
 
 # --- TOTAL RETURN ---
