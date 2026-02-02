@@ -4,95 +4,98 @@ import yfinance as yf
 import plotly.graph_objects as go
 
 def show():
-    # TradingView Stil Ayarları
-    up_color = '#26a69a'  # Standart TV Yeşili
-    down_color = '#ef5350' # Standart TV Kırmızısı
-
+    # --- STİL VE RENKLER ---
+    up_color, down_color = '#26a69a', '#ef5350'
+    
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 
     @st.cache_data(ttl=300)
-    def load_clean_data():
+    def load_data():
         df = pd.read_csv(SHEET_URL)
         df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
-        return df[df["Symbol"] != "CASH"].sort_values('Date')
+        # Sadece hisseleri ve İLK işlem tarihinden sonrasını al
+        trades = df[df["Symbol"] != "CASH"].sort_values('Date')
+        return trades, trades['Date'].min()
 
-    trades = load_clean_data()
+    trades, first_trade_date = load_data()
     symbols = trades["Symbol"].unique().tolist()
-    start_date = trades['Date'].min()
 
-    with st.spinner('Profesyonel terminal verileri yükleniyor...'):
-        data = yf.download(symbols, start=start_date, interval="1d", group_by='ticker', progress=False)
+    # Sidebar Seçimleri
+    st.sidebar.subheader("Grafik Ayarları")
+    chart_mode = st.sidebar.selectbox("Grafik Türü", ["Candlestick", "Heiken Ashi", "Line"])
 
-    # --- PROFESYONEL OHLC HESAPLAMA ---
-    daily_records = []
+    with st.spinner('Piyasa verileri temizleniyor...'):
+        # Boşluğu önlemek için tam olarak İLK işlem tarihinde başlatıyoruz
+        data = yf.download(symbols, start=first_trade_date, interval="1d", group_by='ticker', progress=False)
+
+    # --- OHLC VERİ ÜRETİMİ ---
+    ohlc_list = []
     for date in data.index:
-        mkt_val_open = mkt_val_high = mkt_val_low = mkt_val_close = 0
-        past_trades = trades[trades['Date'] <= date]
-        
+        # Sadece o güne kadar olan alımları hesapla
+        current_status = trades[trades['Date'] <= date]
+        if current_status.empty: continue # Eğer o gün henüz alım yapılmadıysa pas geç (Boşluğu önler)
+
+        o = h = l = c = 0
         for sym in symbols:
-            qty = past_trades[past_trades['Symbol'] == sym]['Quantity'].sum()
+            qty = current_status[current_status['Symbol'] == sym]['Quantity'].sum()
             if qty > 0:
                 try:
-                    s_data = data[sym].loc[date] if len(symbols) > 1 else data.loc[date]
-                    mkt_val_open  += qty * s_data['Open']
-                    mkt_val_high  += qty * s_data['High']
-                    mkt_val_low   += qty * s_data['Low']
-                    mkt_val_close += qty * s_data['Close']
+                    s = data[sym].loc[date] if len(symbols) > 1 else data.loc[date]
+                    o += qty * s['Open']
+                    h += qty * s['High']
+                    l += qty * s['Low']
+                    c += qty * s['Close']
                 except: continue
         
-        if mkt_val_close > 0:
-            daily_records.append({
-                'Date': date, 'Open': mkt_val_open, 'High': mkt_val_high, 
-                'Low': mkt_val_low, 'Close': mkt_val_close
-            })
+        if c > 0:
+            ohlc_list.append({'Date': date, 'Open': o, 'High': h, 'Low': l, 'Close': c})
 
-    df_ohlc = pd.DataFrame(daily_records).set_index('Date')
+    df_final = pd.DataFrame(ohlc_list).set_index('Date')
 
-    # --- ÜST PANEL (DASHBOARD) ---
-    current = df_ohlc['Close'].iloc[-1]
-    prev = df_ohlc['Close'].iloc[-2]
-    change = current - prev
-    pct = (change / prev) * 100
+    # --- DASHBOARD PANELİ ---
+    last_val = df_final['Close'].iloc[-1]
+    prev_val = df_final['Close'].iloc[-2]
+    d_val = last_val - prev_val
+    d_pct = (d_val / prev_val) * 100
     
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        st.markdown(f"### ${current:,.2f}")
-    with c2:
-        color = "green" if change >= 0 else "red"
-        st.markdown(f"<p style='color:{color}; font-size:20px; margin-top:10px;'>{change:+,.2f} ({pct:+.2f}%) Today</p>", unsafe_allow_html=True)
+    st.markdown(f"### Portföy Değeri: ${last_val:,.2f} <span style='color:{'#26a69a' if d_val >=0 else '#ef5350'}; font-size:18px;'> {d_val:+,.2f} ({d_pct:+.2f}%)</span>", unsafe_allow_html=True)
 
     # --- GRAFİK OLUŞTURMA ---
-    fig = go.Figure(data=[go.Candlestick(
-        x=df_ohlc.index,
-        open=df_ohlc['Open'],
-        high=df_ohlc['High'],
-        low=df_ohlc['Low'],
-        close=df_ohlc['Close'],
-        increasing_line_color=up_color, decreasing_line_color=down_color,
-        increasing_fillcolor=up_color,  decreasing_fillcolor=down_color,
-        line_width=1.5
-    )])
+    fig = go.Figure()
 
-    # --- PROFESYONEL DOKUNUŞLAR ---
+    if chart_mode == "Candlestick":
+        fig.add_trace(go.Candlestick(x=df_final.index, open=df_final['Open'], high=df_final['High'], 
+                                     low=df_final['Low'], close=df_final['Close'],
+                                     increasing_line_color=up_color, decreasing_line_color=down_color,
+                                     name="Candle"))
+    
+    elif chart_mode == "Heiken Ashi":
+        # HA Hesaplama
+        ha_close = (df_final['Open'] + df_final['High'] + df_final['Low'] + df_final['Close']) / 4
+        ha_open = (df_final['Open'].shift(1) + df_final['Close'].shift(1)) / 2
+        ha_open.iloc[0] = df_final['Open'].iloc[0]
+        fig.add_trace(go.Candlestick(x=df_final.index, open=ha_open, high=df_final['High'], 
+                                     low=df_final['Low'], close=ha_close,
+                                     increasing_line_color=up_color, decreasing_line_color=down_color,
+                                     name="Heiken Ashi"))
+
+    else: # Line Chart
+        fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Close'], line=dict(color='#2962FF', width=3), 
+                                 fill='tozeroy', name="Line"))
+
+    # --- BOŞLUKLARI VE HAFTA SONLARINI SİLME ---
     fig.update_xaxes(
-        rangebreaks=[dict(bounds=["sat", "mon"])], # Hafta sonlarını kaldır
-        gridcolor='#f0f0f0',
-        tickformat='%d %b'
+        rangebreaks=[dict(bounds=["sat", "mon"])], # Hafta sonu boşluklarını sil
+        type='date',
+        gridcolor='#f0f0f0'
     )
     
-    fig.update_yaxes(
-        side="right", # Fiyat ekseni sağda
-        gridcolor='#f0f0f0',
-        tickprefix="$",
-        tickformat=",.0f"
-    )
-
     fig.update_layout(
-        height=700,
-        template="plotly_white",
+        height=700, template="plotly_white",
+        yaxis=dict(side="right", tickformat=",.0f", gridcolor='#f0f0f0'),
         xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=60, t=10, b=10),
-        hovermode='x unified'
+        margin=dict(l=0, r=50, t=10, b=10),
+        hovermode="x unified"
     )
 
     st.plotly_chart(fig, use_container_width=True)
