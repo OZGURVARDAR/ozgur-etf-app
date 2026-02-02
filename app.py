@@ -69,10 +69,22 @@ for symbol in symbols:
     })
 
 # --- CASH ---
-# Sütun adlarını normalize et ve KeyError engelle
-cash_df.columns = cash_df.columns.str.strip().str.replace("\n","")
-cash_df["Amount"] = pd.to_numeric(cash_df["Amount"], errors="raise")
-cash_remaining = cash_df["Amount"].sum()
+# Sütun adlarını normalize et ve olası isim farklarını yakala
+cash_df.columns = cash_df.columns.str.strip().str.replace("\n","").str.replace("\r","")
+if "Amount" in cash_df.columns:
+    cash_col = "Amount"
+else:
+    # Amount benzeri bir sütun bul
+    possible = [c for c in cash_df.columns if "amount" in c.lower()]
+    if possible:
+        cash_col = possible[0]
+        st.warning(f"'Amount' column not found, using '{cash_col}' instead")
+    else:
+        st.error("Cash sheet has no 'Amount' column. Lütfen sütun adını kontrol edin!")
+        st.stop()
+
+cash_df[cash_col] = pd.to_numeric(cash_df[cash_col], errors="raise")
+cash_remaining = cash_df[cash_col].sum()
 cash_ratio_pct = (cash_remaining / (current_value + cash_remaining) * 100) if (current_value + cash_remaining) != 0 else 0
 
 # --- TOTAL RETURN ---
