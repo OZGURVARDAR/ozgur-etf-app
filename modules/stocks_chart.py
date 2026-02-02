@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 
 def show():
@@ -38,27 +39,23 @@ def show():
     # --- CALCULATE DAILY PORTFOLIO VALUE ---
     portfolio_daily = pd.DataFrame(index=prices.index)
     portfolio_daily["Total Value"] = 0
+
     for symbol in symbols:
         quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
         portfolio_daily["Total Value"] += prices[symbol] * quantity
 
-    # --- EMA ---
+    # --- EMA LINES ---
     portfolio_daily[f"EMA{ema1_days}"] = portfolio_daily["Total Value"].ewm(span=ema1_days, adjust=False).mean()
     portfolio_daily[f"EMA{ema2_days}"] = portfolio_daily["Total Value"].ewm(span=ema2_days, adjust=False).mean()
 
-    # --- HEIKEN ASHI ---
-    if chart_type == "Heiken Ashi" or chart_type == "Candlestick":
-        df_ha = portfolio_daily.copy()
-        df_ha["HA_Close"] = (df_ha["Total Value"] + df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0])) / 2
-        df_ha["HA_Open"] = (df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0]) + 
-                            df_ha["Total Value"].shift(2).fillna(df_ha["Total Value"].iloc[0])) / 2
-        df_ha["HA_High"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].max(axis=1)
-        df_ha["HA_Low"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].min(axis=1)
+    # --- CREATE SUBPLOTS FOR RSI ---
+    rows = 2 if show_rsi or show_ath else 1
+    specs = [[{"secondary_y": False}]] + [[{"secondary_y": False}]]*(rows-1)
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.08, row_heights=[0.7]+[0.3]*(rows-1),
+                        specs=specs)
 
-    # --- PLOTLY FIGURE ---
-    fig = go.Figure()
-
-    # --- Portfolio Value ---
+    # --- PORTFOLIO VALUE ---
     if chart_type == "Line":
         fig.add_trace(go.Scatter(
             x=portfolio_daily.index,
@@ -66,17 +63,24 @@ def show():
             mode="lines",
             name="Portfolio Value",
             line=dict(color="blue", width=2)
-        ))
+        ), row=1, col=1)
     elif chart_type == "Candlestick":
         fig.add_trace(go.Candlestick(
             x=portfolio_daily.index,
-            open=portfolio_daily["Total Value"],
-            high=portfolio_daily["Total Value"],
-            low=portfolio_daily["Total Value"],
+            open=portfolio_daily["Total Value"].shift(1).fillna(portfolio_daily["Total Value"].iloc[0]),
+            high=portfolio_daily["Total Value"].combine(portfolio_daily["Total Value"].shift(1), max),
+            low=portfolio_daily["Total Value"].combine(portfolio_daily["Total Value"].shift(1), min),
             close=portfolio_daily["Total Value"],
             name="Portfolio Value"
-        ))
+        ), row=1, col=1)
     elif chart_type == "Heiken Ashi":
+        df_ha = portfolio_daily.copy()
+        df_ha["HA_Close"] = (df_ha["Total Value"] + df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0])) / 2
+        df_ha["HA_Open"] = (df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0]) +
+                            df_ha["Total Value"].shift(2).fillna(df_ha["Total Value"].iloc[0])) / 2
+        df_ha["HA_High"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].max(axis=1)
+        df_ha["HA_Low"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].min(axis=1)
+
         fig.add_trace(go.Candlestick(
             x=df_ha.index,
             open=df_ha["HA_Open"],
@@ -84,7 +88,7 @@ def show():
             low=df_ha["HA_Low"],
             close=df_ha["HA_Close"],
             name="Portfolio Value (Heiken Ashi)"
-        ))
+        ), row=1, col=1)
 
     # --- EMA LINES ---
     fig.add_trace(go.Scatter(
@@ -93,28 +97,16 @@ def show():
         mode="lines",
         name=f"EMA{ema1_days}",
         line=dict(color="green", width=2)
-    ))
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=portfolio_daily.index,
         y=portfolio_daily[f"EMA{ema2_days}"],
         mode="lines",
         name=f"EMA{ema2_days}",
         line=dict(color="red", width=2)
-    ))
+    ), row=1, col=1)
 
-    # --- ATH LINE ---
-    if show_ath:
-        ath_value = portfolio_daily["Total Value"].max()
-        fig.add_trace(go.Scatter(
-            x=portfolio_daily.index,
-            y=[ath_value]*len(portfolio_daily),
-            mode="lines",
-            name="ATH",
-            line=dict(color="red", dash="dash", width=2)
-        ))
-        st.write(f"Current distance from ATH: {portfolio_daily['Total Value'].iloc[-1] - ath_value:,.2f} $")
-
-    # --- RSI ---
+    # --- RSI ALT PANEL ---
     if show_rsi:
         delta = portfolio_daily["Total Value"].diff()
         gain = delta.clip(lower=0)
@@ -127,17 +119,21 @@ def show():
             x=portfolio_daily.index,
             y=portfolio_daily["RSI"],
             name="RSI",
-            yaxis="y2",
             line=dict(color="purple")
-        ))
-        fig.update_layout(
-            yaxis2=dict(
-                overlaying="y",
-                side="right",
-                range=[0,100],
-                title="RSI"
-            )
-        )
+        ), row=2, col=1)
+
+    # --- ATH ALT PANEL ---
+    if show_ath:
+        ath_value = portfolio_daily["Total Value"].max()
+        ath_pct_distance = (portfolio_daily["Total Value"].iloc[-1] / ath_value - 1) * 100
+        st.write(f"Current distance from ATH: {ath_pct_distance:.2f}%")
+        fig.add_trace(go.Scatter(
+            x=portfolio_daily.index,
+            y=[ath_value]*len(portfolio_daily),
+            mode="lines",
+            name="ATH",
+            line=dict(color="red", dash="dash")
+        ), row=2, col=1)
 
     # --- TRENDLINE DRAWING ---
     layout_dragmode = "drawline" if enable_trendline else "zoom"
@@ -149,7 +145,7 @@ def show():
         margin=dict(t=40, b=40)
     )
 
-    # --- Y AXIS FORMATTING (FULL VALUES) ---
+    # --- Y AXIS FULL VALUES ---
     fig.update_yaxes(tickformat=",.0f")  # 12,490 gibi tam değer
 
     st.plotly_chart(fig, use_container_width=True)
