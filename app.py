@@ -20,46 +20,33 @@ df["Date"] = pd.to_datetime(df["Date"])
 df["Quantity"] = pd.to_numeric(df["Quantity"], errors="raise")
 df["Price"] = pd.to_numeric(df["Price"], errors="raise")
 
-# CASH satırlarını hariç tut
+# Exclude CASH rows
 df = df[df["Symbol"] != "CASH"]
 
-# --- INVESTED CAPITAL (NET COST BASIS) ---
-df["Cost"] = df["Quantity"] * df["Price"]
-invested_capital = df.loc[df["Quantity"] > 0, "Cost"].sum()
-
+# --- PORTFOLIO CALCULATION FUNCTION ---
 def calculate_portfolio_metrics(df: pd.DataFrame) -> dict:
     """
-    Core portfolio calculation engine.
+    Calculate invested capital, current value, and total return %.
     """
-
-    # --- INVESTED CAPITAL ---
+    # Invested capital
     df["Cost"] = df["Quantity"] * df["Price"]
     invested_capital = df.loc[df["Quantity"] > 0, "Cost"].sum()
 
-    # --- CURRENT VALUE ---
+    # Get latest prices
     symbols = df["Symbol"].unique().tolist()
-
-    prices = yf.download(
-        symbols,
-        period="5d",
-        progress=False
-    )["Close"]
-
+    prices = yf.download(symbols, period="5d", progress=False)["Close"]
     if isinstance(prices, pd.Series):
         prices = prices.to_frame()
 
-    def get_last_price(symbol: str) -> float:
-        return prices[symbol].dropna().iloc[-1]
-
+    # Current value
     current_value = 0.0
     for symbol in symbols:
         net_quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
-        current_value += net_quantity * get_last_price(symbol)
+        last_price = prices[symbol].dropna().iloc[-1]
+        current_value += net_quantity * last_price
 
-    # --- RETURN ---
-    total_return_pct = (
-        (current_value - invested_capital) / invested_capital * 100
-    )
+    # Portfolio return %
+    total_return_pct = (current_value - invested_capital) / invested_capital * 100
 
     return {
         "invested_capital": invested_capital,
@@ -67,34 +54,10 @@ def calculate_portfolio_metrics(df: pd.DataFrame) -> dict:
         "total_return_pct": total_return_pct
     }
 
-
-# --- CURRENT VALUE ---
-symbols = df["Symbol"].unique().tolist()
-
-prices = yf.download(
-    symbols,
-    period="5d",
-    progress=False
-)["Close"]
-
-if isinstance(prices, pd.Series):
-    prices = prices.to_frame()
-
-def get_last_price(symbol: str) -> float:
-    return prices[symbol].dropna().iloc[-1]
-
-current_value = 0.0
-
-for symbol in symbols:
-    net_quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
-    current_value += net_quantity * get_last_price(symbol)
-
-# --- RETURN ---
-total_return_pct = (
-    (current_value - invested_capital) / invested_capital * 100
-)
+# --- CALCULATE METRICS ---
+metrics = calculate_portfolio_metrics(df)
 
 # --- OUTPUT ---
-st.metric("Invested Capital ($)", f"{invested_capital:,.2f}")
-st.metric("Current Value ($)", f"{current_value:,.2f}")
-st.metric("Total Portfolio Return (%)", f"{total_return_pct:.2f}%")
+st.metric("Invested Capital ($)", f"{metrics['invested_capital']:,.2f}")
+st.metric("Current Value ($)", f"{metrics['current_value']:,.2f}")
+st.metric("Total Portfolio Return (%)", f"{metrics['total_return_pct']:.2f}%")
