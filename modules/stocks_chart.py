@@ -3,15 +3,16 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 def show():
-    st.subheader("📈 Portfolio Interactive Chart (TradingView-like)")
+    st.subheader("📈 Portfolio Interactive Chart (15-min Intra-day)")
 
     # --- SIDEBAR SETTINGS ---
-    chart_type = st.sidebar.selectbox("Portfolio Chart Type", ["Line", "Candlestick", "Heiken Ashi"])
-    ema1_days = st.sidebar.number_input("EMA 1 (days)", min_value=1, max_value=200, value=50)
-    ema2_days = st.sidebar.number_input("EMA 2 (days)", min_value=1, max_value=200, value=100)
-    show_rsi = st.sidebar.checkbox("Show RSI", value=False)
+    chart_type = st.sidebar.selectbox("Portfolio Chart Type", ["Candlestick", "Line", "Heiken Ashi"])
+    ema1_days = st.sidebar.number_input("EMA 1 (Short)", min_value=1, max_value=200, value=50)
+    ema2_days = st.sidebar.number_input("EMA 2 (Long)", min_value=1, max_value=200, value=100)
+    show_rsi = st.sidebar.checkbox("Show RSI", value=True)
     enable_trendline = st.sidebar.checkbox("Enable Trendline Drawing", value=False)
 
     # --- GOOGLE SHEETS CSV LINK ---
@@ -20,139 +21,121 @@ def show():
         "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
     )
 
-    # --- LOAD STOCK DATA ---
-    df = pd.read_csv(SHEET_URL)
-    df = df[df["Symbol"] != "CASH"]
-    symbols = df["Symbol"].unique().tolist()
+    # --- LOAD PORTFOLIO DATA ---
+    @st.cache_data(ttl=600)  # 10 dakikada bir veriyi yeniler, performansı artırır
+    def load_data():
+        df_sheets = pd.read_csv(SHEET_URL)
+        df_stocks = df_sheets[df_sheets["Symbol"] != "CASH"].copy()
+        return df_stocks
 
-    if len(symbols) == 0:
+    df_stocks = load_data()
+    symbols = df_stocks["Symbol"].unique().tolist()
+
+    if not symbols:
         st.info("No stocks in portfolio.")
         return
 
-    # --- FETCH INTRA-DAY DATA (15m) WITH FALLBACK TO DAILY ---
-    try:
-        intraday = yf.download(symbols, period="6mo", interval="15m", progress=False)["Close"]
-        if isinstance(intraday, pd.Series):
-            intraday = intraday.to_frame()
-        if intraday.empty:
-            raise ValueError("Intra-day data empty")
-        st.info("Using 15-min intra-day data")
-    except:
-        intraday = yf.download(symbols, period="1y", interval="1d", progress=False)["Close"]
-        if isinstance(intraday, pd.Series):
-            intraday = intraday.to_frame()
-        st.warning("Intra-day data unavailable. Using daily data instead.")
-
-    # --- CALCULATE PORTFOLIO VALUE ---
-    portfolio_intraday = pd.DataFrame(index=intraday.index)
-    portfolio_intraday["Total Value"] = 0
-    for symbol in symbols:
-        if symbol in intraday.columns:
-            quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
-            portfolio_intraday["Total Value"] += intraday[symbol] * quantity
-
-    if portfolio_intraday.empty or portfolio_intraday["Total Value"].isna().all():
-        st.warning("Portfolio data could not be retrieved.")
+    # --- FETCH 15-MIN DATA ---
+    # 6 ay boyunca 15dk'lık veri çekiyoruz.
+    # Not: yfinance bazen 15dk veri için 60 gün sınırı koyabilir, hata alırsan "2mo" yapabilirsin.
+    with st.spinner('Fetching market data...'):
+        data = yf.download(symbols, period="6mo", interval="15m", progress=False)
+    
+    if data.empty:
+        st.error("Data could not be fetched from Yahoo Finance.")
         return
 
-    # --- FILL MISSING MINUTES OR DAYS ---
-    start = portfolio_intraday.index.min()
-    end = portfolio_intraday.index.max()
-    all_index = pd.date_range(start=start, end=end, freq="15T" if intraday.index.freqstr=="15T" else "B")
-    portfolio_intraday = portfolio_intraday.reindex(all_index).ffill()
+    # MultiIndex yönetimi (Tek sembol vs Çok sembol)
+    close_prices = data['Close']
+    if isinstance(close_prices, pd.Series):
+        close_prices = close_prices.to_frame(name=symbols[0])
 
-    # --- RESAMPLE DAILY FOR CANDLES ---
-    daily = portfolio_intraday["Total Value"].resample('B').ohlc()
-    daily.columns = [col.capitalize() for col in daily.columns]  # Open, High, Low, Close
+    # --- CALCULATE PORTFOLIO OHLC (15-MIN) ---
+    # Portföy değerini her 15 dakikalık bar için hesaplıyoruz
+    portfolio_15m = pd.DataFrame(index=close_prices.index)
+    portfolio_15m["Value"] = 0
+    for symbol in symbols:
+        if symbol in close_prices.columns:
+            qty = df_stocks.loc[df_stocks["Symbol"] == symbol, "Quantity"].sum()
+            portfolio_15m["Value"] += close_prices[symbol] * qty
 
-    # --- EMA ---
-    daily[f"EMA{ema1_days}"] = daily["Close"].ewm(span=ema1_days, adjust=False).mean()
-    daily[f"EMA{ema2_days}"] = daily["Close"].ewm(span=ema2_days, adjust=False).mean()
+    # 15 dakikalık veriden OHLC oluşturma
+    # Günlük istersen 'B' (iş günü), gün içi 15dk kalsın dersen resample yapmadan devam edebilirsin.
+    # Ama "mum" grafik en güzel 1 saatlik veya günlükte görünür. 
+    # Burada 15 dakikalık barları koruyoruz:
+    df_plot = portfolio_15m["Value"].resample('15T').ohlc().dropna()
 
-    # --- SUBPLOTS ---
+    # --- INDICATORS ---
+    # EMA (Kapanış fiyatı üzerinden)
+    df_plot[f"EMA{ema1_days}"] = df_plot["close"].ewm(span=ema1_days, adjust=False).mean()
+    df_plot[f"EMA{ema2_days}"] = df_plot["close"].ewm(span=ema2_days, adjust=False).mean()
+
+    # RSI (Wilder's Smoothing - Daha doğru hesaplama)
+    def calculate_rsi(series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0))
+        loss = (-delta.where(delta < 0, 0))
+        avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    if show_rsi:
+        df_plot["RSI"] = calculate_rsi(df_plot["close"])
+
+    # --- PLOTLY CHART ---
     rows = 2 if show_rsi else 1
-    fig = make_subplots(
-        rows=rows, cols=1, shared_xaxes=True,
-        vertical_spacing=0.08, row_heights=[0.7]+[0.3]*(rows-1)
-    )
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.05, row_heights=[0.7, 0.3] if show_rsi else [1])
 
-    # --- PORTFOLIO GRAPH ---
-    if chart_type == "Line":
-        fig.add_trace(go.Scatter(
-            x=daily.index,
-            y=daily["Close"],
-            mode="lines",
-            name="Portfolio Value",
-            line=dict(color="blue", width=2)
-        ), row=1, col=1)
-    elif chart_type == "Candlestick":
+    # Chart Type Logic
+    if chart_type == "Candlestick":
         fig.add_trace(go.Candlestick(
-            x=daily.index,
-            open=daily["Open"],
-            high=daily["High"],
-            low=daily["Low"],
-            close=daily["Close"],
-            name="Portfolio Value"
+            x=df_plot.index, open=df_plot['open'], high=df_plot['high'],
+            low=df_plot['low'], close=df_plot['close'], name="Portfolio"
         ), row=1, col=1)
     elif chart_type == "Heiken Ashi":
-        df_ha = daily.copy()
-        df_ha["HA_Close"] = (df_ha["Open"] + df_ha["High"] + df_ha["Low"] + df_ha["Close"]) / 4
-        df_ha["HA_Open"] = ((df_ha["Open"].shift(1).fillna(df_ha["Open"].iloc[0]) +
-                             df_ha["Close"].shift(1).fillna(df_ha["Close"].iloc[0])) / 2)
-        df_ha["HA_High"] = df_ha[["HA_Open","HA_Close","High"]].max(axis=1)
-        df_ha["HA_Low"] = df_ha[["HA_Open","HA_Close","Low"]].min(axis=1)
-
+        ha_close = (df_plot['open'] + df_plot['high'] + df_plot['low'] + df_plot['close']) / 4
+        ha_open = (df_plot['open'].shift(1) + df_plot['close'].shift(1)) / 2
+        ha_open.iloc[0] = df_plot['open'].iloc[0]
+        ha_high = df_plot[['high', 'open', 'close']].max(axis=1)
+        ha_low = df_plot[['low', 'open', 'close']].min(axis=1)
         fig.add_trace(go.Candlestick(
-            x=df_ha.index,
-            open=df_ha["HA_Open"],
-            high=df_ha["HA_High"],
-            low=df_ha["HA_Low"],
-            close=df_ha["HA_Close"],
-            name="Portfolio Value (Heiken Ashi)"
+            x=df_plot.index, open=ha_open, high=ha_high, low=ha_low, close=ha_close, name="Heiken Ashi"
         ), row=1, col=1)
+    else:
+        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['close'], name="Value", line=dict(color="#1f77b4")), row=1, col=1)
 
-    # --- EMA LINES ---
-    fig.add_trace(go.Scatter(
-        x=daily.index,
-        y=daily[f"EMA{ema1_days}"],
-        mode="lines",
-        name=f"EMA{ema1_days}",
-        line=dict(color="green", width=2)
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=daily.index,
-        y=daily[f"EMA{ema2_days}"],
-        mode="lines",
-        name=f"EMA{ema2_days}",
-        line=dict(color="red", width=2)
-    ), row=1, col=1)
+    # Moving Averages
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot[f"EMA{ema1_days}"], name=f"EMA {ema1_days}", line=dict(width=1.5)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot[f"EMA{ema2_days}"], name=f"EMA {ema2_days}", line=dict(width=1.5)), row=1, col=1)
 
-    # --- RSI PANEL ---
+    # RSI
     if show_rsi:
-        delta = daily["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -1 * delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14).mean()
-        avg_loss = loss.rolling(window=14).mean()
-        rs = avg_gain / avg_loss
-        daily["RSI"] = 100 - (100 / (1 + rs))
-        fig.add_trace(go.Scatter(
-            x=daily.index,
-            y=daily["RSI"],
-            name="RSI",
-            line=dict(color="purple")
-        ), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["RSI"], name="RSI", line=dict(color="purple")), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
 
-    # --- LAYOUT ---
-    layout_dragmode = "drawline" if enable_trendline else "zoom"
-    fig.update_layout(
-        xaxis_rangeslider_visible=False,
-        yaxis_title="Portfolio Value ($)",
-        dragmode=layout_dragmode,
-        height=600,
-        margin=dict(t=40, b=40)
+    # --- BOŞLUKLARI KALDIRMA (AMERİKAN BORSASI SAATLERİ) ---
+    # Hafta sonlarını (Cumartesi-Pazar) ve işlem saatleri dışını (16:00 - 09:30) gizler
+    fig.update_xaxes(
+        rangebreaks=[
+            dict(bounds=["sat", "mon"]), # Cumartesi sabahından Pazartesi sabahına kadar kapat
+            dict(bounds=[16, 9.5], pattern="hour"), # Akşam 16:00'dan sabah 09:30'a kadar kapat
+            # Not: Resmi tatilleri (Noel, 1 Ocak vb.) yfinance verisi zaten boş getirdiği için 
+            # yukarıdaki saat kuralı onları da büyük oranda kapsar.
+        ]
     )
-    fig.update_yaxes(tickformat=",.0f")
-    fig.update_xaxes(tickangle=0, tickformat="%Y-%m-%d")
+
+    fig.update_layout(
+        height=800,
+        xaxis_rangeslider_visible=False,
+        dragmode="drawline" if enable_trendline else "zoom",
+        template="plotly_white",
+        margin=dict(l=50, r=50, t=30, b=30)
+    )
 
     st.plotly_chart(fig, use_container_width=True)
+
+if __name__ == "__main__":
+    show()
