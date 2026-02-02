@@ -78,6 +78,9 @@ for symbol in symbols:
 
 # --- CASH ---
 cash_value = df[df["Symbol"]=="CASH"]["Cost"].sum()
+total_stock_value = sum([row['Current Value'] for row in rows])
+cash_remaining = current_value - total_stock_value
+cash_ratio_pct = (cash_remaining / current_value) * 100 if current_value != 0 else 0
 
 # --- TOTAL RETURN (EXCLUDE CASH) ---
 total_return_pct = (current_value - invested_capital - cash_value) / invested_capital * 100
@@ -88,7 +91,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Invested Capital ($)", f"{invested_capital:,.2f}")
 c2.metric("Current Value ($)", f"{current_value:,.2f}")
 c3.metric("Total Portfolio Return (%)", f"{total_return_pct:.2f}%")
-c4.metric("Cash Ratio", f"{(cash_value / current_value * 100):.2f}%", f"${cash_value:,.2f}")
+c4.metric("Cash Remaining", f"{cash_ratio_pct:.2f}%", f"${cash_remaining:,.2f}")
 
 # --- CONTRIBUTION TABLE ---
 st.subheader("🧩 Stock Contribution Analysis with Cash")
@@ -103,7 +106,6 @@ benchmarks = {
     "US100": "^NDX"
 }
 
-# --- TIMEFRAMES ---
 timeframes = {
     "1W": 7,
     "1M": 30,
@@ -117,22 +119,19 @@ timeframes = {
 benchmark_returns = {}
 portfolio_returns = {}
 
-today = datetime.today().date()
+today = pd.Timestamp.today()
 
 for tf_name, days in timeframes.items():
-    # PORTFOLIO RETURN
     if tf_name == "YTD":
-        start_date = datetime(today.year,1,1)
+        start_date = pd.Timestamp(today.year,1,1)
     elif days is None:
         start_date = df["Date"].min()
     else:
-        start_date = today - timedelta(days=days)
+        start_date = today - pd.Timedelta(days=days)
 
-    # Portfolio: Current Value - Start Value (exclude cash)
     start_portfolio_df = df[df["Date"] <= start_date]
-    start_invested = start_portfolio_df[start_portfolio_df["Symbol"]!="CASH"]
-    start_value = start_invested["Quantity"].sum() * last_price(start_invested["Symbol"].iloc[0]) if not start_invested.empty else 0
-    portfolio_returns[tf_name] = total_return_pct  # For simplicity, using total_return_pct as proxy
+    # Portfolio returns still using total_return_pct as proxy
+    portfolio_returns[tf_name] = total_return_pct
 
     # Benchmark Returns
     bench_tf = {}
@@ -144,7 +143,6 @@ for tf_name, days in timeframes.items():
             bench_tf[name] = (data[-1] - data[0]) / data[0] * 100
     benchmark_returns[tf_name] = bench_tf
 
-# --- DISPLAY BENCHMARK TABLE ---
 bench_table = pd.DataFrame(benchmark_returns).T
 bench_table.index.name = "Timeframe"
 st.table(bench_table.style.format("{:.2f}%"))
