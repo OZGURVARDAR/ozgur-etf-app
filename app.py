@@ -69,7 +69,7 @@ for symbol in symbols:
     })
 
 # --- CASH ---
-# Sütun adlarını normalize et
+# Sütun adlarını normalize et ve KeyError engelle
 cash_df.columns = cash_df.columns.str.strip().str.replace("\n","")
 cash_df["Amount"] = pd.to_numeric(cash_df["Amount"], errors="raise")
 cash_remaining = cash_df["Amount"].sum()
