@@ -62,10 +62,10 @@ def show():
             line=dict(color="blue", width=2)
         ), row=1, col=1)
     elif chart_type == "Candlestick":
-        # Günlük Open/High/Low/Close
+        # Günlük Open/High/Low/Close (proxy: open=önceki gün close)
         open_val = portfolio_daily["Total Value"].shift(1).fillna(portfolio_daily["Total Value"].iloc[0])
-        high_val = portfolio_daily[["Total Value", open_val]].max(axis=1)
-        low_val = portfolio_daily[["Total Value", open_val]].min(axis=1)
+        high_val = pd.concat([portfolio_daily["Total Value"], open_val], axis=1).max(axis=1)
+        low_val = pd.concat([portfolio_daily["Total Value"], open_val], axis=1).min(axis=1)
         close_val = portfolio_daily["Total Value"]
 
         fig.add_trace(go.Candlestick(
@@ -125,7 +125,7 @@ def show():
             line=dict(color="purple")
         ), row=2, col=1)
 
-    # --- TRENDLINE DRAWING (Kalınlık azaltıldı) ---
+    # --- TRENDLINE DRAWING (Kalınlık azaltıldı, silme manuel) ---
     layout_dragmode = "drawline" if enable_trendline else "zoom"
     fig.update_layout(
         xaxis_rangeslider_visible=False,
@@ -138,7 +138,7 @@ def show():
     # --- Y AXIS FULL VALUES ---
     fig.update_yaxes(tickformat=",.0f")  # 12,490 gibi tam değer
 
-    # --- X AXIS: işlem günleri için kategori ---
-    fig.update_xaxes(type="category")
+    # --- X AXIS: Tarih, yatay ve okunabilir ---
+    fig.update_xaxes(tickangle=0, tickformat="%Y-%m-%d")  # Dik yazıları yatay yaptı
 
     st.plotly_chart(fig, use_container_width=True)
