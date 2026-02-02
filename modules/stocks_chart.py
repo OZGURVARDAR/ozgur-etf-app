@@ -3,7 +3,6 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import numpy as np
 
 def show():
     st.subheader("📈 Portfolio Interactive Chart")
@@ -13,7 +12,6 @@ def show():
     ema1_days = st.sidebar.number_input("EMA 1 (days)", min_value=1, max_value=200, value=50)
     ema2_days = st.sidebar.number_input("EMA 2 (days)", min_value=1, max_value=200, value=100)
     show_rsi = st.sidebar.checkbox("Show RSI", value=False)
-    show_ath = st.sidebar.checkbox("Show ATH", value=False)
     enable_trendline = st.sidebar.checkbox("Enable Trendline Drawing", value=True)
 
     # --- GOOGLE SHEETS CSV LINK ---
@@ -39,7 +37,6 @@ def show():
     # --- CALCULATE DAILY PORTFOLIO VALUE ---
     portfolio_daily = pd.DataFrame(index=prices.index)
     portfolio_daily["Total Value"] = 0
-
     for symbol in symbols:
         quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
         portfolio_daily["Total Value"] += prices[symbol] * quantity
@@ -48,12 +45,12 @@ def show():
     portfolio_daily[f"EMA{ema1_days}"] = portfolio_daily["Total Value"].ewm(span=ema1_days, adjust=False).mean()
     portfolio_daily[f"EMA{ema2_days}"] = portfolio_daily["Total Value"].ewm(span=ema2_days, adjust=False).mean()
 
-    # --- CREATE SUBPLOTS FOR RSI ---
-    rows = 2 if show_rsi or show_ath else 1
-    specs = [[{"secondary_y": False}]] + [[{"secondary_y": False}]]*(rows-1)
-    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.08, row_heights=[0.7]+[0.3]*(rows-1),
-                        specs=specs)
+    # --- CREATE SUBPLOTS ---
+    rows = 2 if show_rsi else 1
+    fig = make_subplots(
+        rows=rows, cols=1, shared_xaxes=True,
+        vertical_spacing=0.08, row_heights=[0.7]+[0.3]*(rows-1)
+    )
 
     # --- PORTFOLIO VALUE ---
     if chart_type == "Line":
@@ -65,12 +62,18 @@ def show():
             line=dict(color="blue", width=2)
         ), row=1, col=1)
     elif chart_type == "Candlestick":
+        # Günlük Open/High/Low/Close
+        open_val = portfolio_daily["Total Value"].shift(1).fillna(portfolio_daily["Total Value"].iloc[0])
+        high_val = portfolio_daily[["Total Value", open_val]].max(axis=1)
+        low_val = portfolio_daily[["Total Value", open_val]].min(axis=1)
+        close_val = portfolio_daily["Total Value"]
+
         fig.add_trace(go.Candlestick(
             x=portfolio_daily.index,
-            open=portfolio_daily["Total Value"].shift(1).fillna(portfolio_daily["Total Value"].iloc[0]),
-            high=portfolio_daily["Total Value"].combine(portfolio_daily["Total Value"].shift(1), max),
-            low=portfolio_daily["Total Value"].combine(portfolio_daily["Total Value"].shift(1), min),
-            close=portfolio_daily["Total Value"],
+            open=open_val,
+            high=high_val,
+            low=low_val,
+            close=close_val,
             name="Portfolio Value"
         ), row=1, col=1)
     elif chart_type == "Heiken Ashi":
@@ -122,20 +125,7 @@ def show():
             line=dict(color="purple")
         ), row=2, col=1)
 
-    # --- ATH ALT PANEL ---
-    if show_ath:
-        ath_value = portfolio_daily["Total Value"].max()
-        ath_pct_distance = (portfolio_daily["Total Value"].iloc[-1] / ath_value - 1) * 100
-        st.write(f"Current distance from ATH: {ath_pct_distance:.2f}%")
-        fig.add_trace(go.Scatter(
-            x=portfolio_daily.index,
-            y=[ath_value]*len(portfolio_daily),
-            mode="lines",
-            name="ATH",
-            line=dict(color="red", dash="dash")
-        ), row=2, col=1)
-
-    # --- TRENDLINE DRAWING ---
+    # --- TRENDLINE DRAWING (Kalınlık azaltıldı) ---
     layout_dragmode = "drawline" if enable_trendline else "zoom"
     fig.update_layout(
         xaxis_rangeslider_visible=False,
@@ -147,5 +137,8 @@ def show():
 
     # --- Y AXIS FULL VALUES ---
     fig.update_yaxes(tickformat=",.0f")  # 12,490 gibi tam değer
+
+    # --- X AXIS: işlem günleri için kategori ---
+    fig.update_xaxes(type="category")
 
     st.plotly_chart(fig, use_container_width=True)
