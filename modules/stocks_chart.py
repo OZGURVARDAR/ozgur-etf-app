@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 def show():
-    st.subheader("📈 Portfolio Interactive Chart")
+    st.subheader("📈 Portfolio Interactive Chart (Intra-day Candlestick)")
 
     # --- SIDEBAR SETTINGS ---
     chart_type = st.sidebar.selectbox("Portfolio Chart Type", ["Line", "Candlestick", "Heiken Ashi"])
@@ -29,21 +29,25 @@ def show():
         st.info("No stocks in portfolio.")
         return
 
-    # --- FETCH DAILY CLOSE PRICES ---
-    prices = yf.download(symbols, period="6mo", interval="1d", progress=False)["Close"]
-    if isinstance(prices, pd.Series):
-        prices = prices.to_frame()
+    # --- FETCH INTRA-DAY DATA (60m) ---
+    intraday = yf.download(symbols, period="6mo", interval="60m", progress=False)["Close"]
+    if isinstance(intraday, pd.Series):
+        intraday = intraday.to_frame()
 
-    # --- CALCULATE DAILY PORTFOLIO VALUE ---
-    portfolio_daily = pd.DataFrame(index=prices.index)
-    portfolio_daily["Total Value"] = 0
+    # --- CALCULATE INTRA-DAY PORTFOLIO VALUE ---
+    portfolio_intraday = pd.DataFrame(index=intraday.index)
+    portfolio_intraday["Total Value"] = 0
     for symbol in symbols:
         quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
-        portfolio_daily["Total Value"] += prices[symbol] * quantity
+        portfolio_intraday["Total Value"] += intraday[symbol] * quantity
+
+    # --- RESAMPLE TO DAILY OHLC ---
+    daily = portfolio_intraday.resample('B').agg({'Total Value': ['first','max','min','last']})
+    daily.columns = ['Open','High','Low','Close']
 
     # --- EMA LINES ---
-    portfolio_daily[f"EMA{ema1_days}"] = portfolio_daily["Total Value"].ewm(span=ema1_days, adjust=False).mean()
-    portfolio_daily[f"EMA{ema2_days}"] = portfolio_daily["Total Value"].ewm(span=ema2_days, adjust=False).mean()
+    daily[f"EMA{ema1_days}"] = daily["Close"].ewm(span=ema1_days, adjust=False).mean()
+    daily[f"EMA{ema2_days}"] = daily["Close"].ewm(span=ema2_days, adjust=False).mean()
 
     # --- CREATE SUBPLOTS ---
     rows = 2 if show_rsi else 1
@@ -55,34 +59,28 @@ def show():
     # --- PORTFOLIO VALUE ---
     if chart_type == "Line":
         fig.add_trace(go.Scatter(
-            x=portfolio_daily.index,
-            y=portfolio_daily["Total Value"],
+            x=daily.index,
+            y=daily["Close"],
             mode="lines",
             name="Portfolio Value",
             line=dict(color="blue", width=2)
         ), row=1, col=1)
     elif chart_type == "Candlestick":
-        # Günlük Open/High/Low/Close (proxy: open=önceki gün close)
-        open_val = portfolio_daily["Total Value"].shift(1).fillna(portfolio_daily["Total Value"].iloc[0])
-        high_val = pd.concat([portfolio_daily["Total Value"], open_val], axis=1).max(axis=1)
-        low_val = pd.concat([portfolio_daily["Total Value"], open_val], axis=1).min(axis=1)
-        close_val = portfolio_daily["Total Value"]
-
         fig.add_trace(go.Candlestick(
-            x=portfolio_daily.index,
-            open=open_val,
-            high=high_val,
-            low=low_val,
-            close=close_val,
+            x=daily.index,
+            open=daily["Open"],
+            high=daily["High"],
+            low=daily["Low"],
+            close=daily["Close"],
             name="Portfolio Value"
         ), row=1, col=1)
     elif chart_type == "Heiken Ashi":
-        df_ha = portfolio_daily.copy()
-        df_ha["HA_Close"] = (df_ha["Total Value"] + df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0])) / 2
-        df_ha["HA_Open"] = (df_ha["Total Value"].shift(1).fillna(df_ha["Total Value"].iloc[0]) +
-                            df_ha["Total Value"].shift(2).fillna(df_ha["Total Value"].iloc[0])) / 2
-        df_ha["HA_High"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].max(axis=1)
-        df_ha["HA_Low"] = df_ha[["HA_Open", "HA_Close", "Total Value"]].min(axis=1)
+        df_ha = daily.copy()
+        df_ha["HA_Close"] = (df_ha["Open"] + df_ha["High"] + df_ha["Low"] + df_ha["Close"]) / 4
+        df_ha["HA_Open"] = ((df_ha["Open"].shift(1).fillna(df_ha["Open"].iloc[0]) +
+                             df_ha["Close"].shift(1).fillna(df_ha["Close"].iloc[0])) / 2)
+        df_ha["HA_High"] = df_ha[["HA_Open", "HA_Close", "High"]].max(axis=1)
+        df_ha["HA_Low"] = df_ha[["HA_Open", "HA_Close", "Low"]].min(axis=1)
 
         fig.add_trace(go.Candlestick(
             x=df_ha.index,
@@ -95,15 +93,15 @@ def show():
 
     # --- EMA LINES ---
     fig.add_trace(go.Scatter(
-        x=portfolio_daily.index,
-        y=portfolio_daily[f"EMA{ema1_days}"],
+        x=daily.index,
+        y=daily[f"EMA{ema1_days}"],
         mode="lines",
         name=f"EMA{ema1_days}",
         line=dict(color="green", width=2)
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
-        x=portfolio_daily.index,
-        y=portfolio_daily[f"EMA{ema2_days}"],
+        x=daily.index,
+        y=daily[f"EMA{ema2_days}"],
         mode="lines",
         name=f"EMA{ema2_days}",
         line=dict(color="red", width=2)
@@ -111,21 +109,21 @@ def show():
 
     # --- RSI ALT PANEL ---
     if show_rsi:
-        delta = portfolio_daily["Total Value"].diff()
+        delta = daily["Close"].diff()
         gain = delta.clip(lower=0)
         loss = -1 * delta.clip(upper=0)
         avg_gain = gain.rolling(window=14).mean()
         avg_loss = loss.rolling(window=14).mean()
         rs = avg_gain / avg_loss
-        portfolio_daily["RSI"] = 100 - (100 / (1 + rs))
+        daily["RSI"] = 100 - (100 / (1 + rs))
         fig.add_trace(go.Scatter(
-            x=portfolio_daily.index,
-            y=portfolio_daily["RSI"],
+            x=daily.index,
+            y=daily["RSI"],
             name="RSI",
             line=dict(color="purple")
         ), row=2, col=1)
 
-    # --- TRENDLINE DRAWING (Kalınlık azaltıldı, silme manuel) ---
+    # --- TRENDLINE DRAWING (Kalınlık azaltıldı) ---
     layout_dragmode = "drawline" if enable_trendline else "zoom"
     fig.update_layout(
         xaxis_rangeslider_visible=False,
@@ -139,6 +137,6 @@ def show():
     fig.update_yaxes(tickformat=",.0f")  # 12,490 gibi tam değer
 
     # --- X AXIS: Tarih, yatay ve okunabilir ---
-    fig.update_xaxes(tickangle=0, tickformat="%Y-%m-%d")  # Dik yazıları yatay yaptı
+    fig.update_xaxes(tickangle=0, tickformat="%Y-%m-%d")
 
     st.plotly_chart(fig, use_container_width=True)
