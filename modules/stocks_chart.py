@@ -5,14 +5,14 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 def show():
-    st.subheader("📈 Portfolio Interactive Chart (Stable Version)")
+    st.subheader("📈 Portfolio Interactive Chart (15-min Intra-day, TradingView-like)")
 
     # --- SIDEBAR SETTINGS ---
     chart_type = st.sidebar.selectbox("Portfolio Chart Type", ["Line", "Candlestick", "Heiken Ashi"])
     ema1_days = st.sidebar.number_input("EMA 1 (days)", min_value=1, max_value=200, value=50)
     ema2_days = st.sidebar.number_input("EMA 2 (days)", min_value=1, max_value=200, value=100)
     show_rsi = st.sidebar.checkbox("Show RSI", value=False)
-    enable_trendline = st.sidebar.checkbox("Enable Trendline Drawing", value=True)
+    enable_trendline = st.sidebar.checkbox("Enable Trendline Drawing", value=False)
 
     # --- GOOGLE SHEETS CSV LINK ---
     SHEET_URL = (
@@ -29,8 +29,8 @@ def show():
         st.info("No stocks in portfolio.")
         return
 
-    # --- FETCH INTRA-DAY DATA (60m) ---
-    intraday = yf.download(symbols, period="6mo", interval="60m", progress=False)["Close"]
+    # --- FETCH INTRA-DAY DATA (15m) ---
+    intraday = yf.download(symbols, period="6mo", interval="15m", progress=False)["Close"]
     if isinstance(intraday, pd.Series):
         intraday = intraday.to_frame()
 
@@ -41,15 +41,15 @@ def show():
         quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
         portfolio_intraday["Total Value"] += intraday[symbol] * quantity
 
-    # --- FILL MISSING BUSINESS DAYS ---
-    all_business_days = pd.bdate_range(start=portfolio_intraday.index.min(), end=portfolio_intraday.index.max())
-    portfolio_intraday = portfolio_intraday.reindex(all_business_days).ffill()
+    # --- FILL MISSING BUSINESS DAYS & MINUTES ---
+    all_minutes = pd.date_range(start=portfolio_intraday.index.min(),
+                                end=portfolio_intraday.index.max(),
+                                freq="15T")
+    portfolio_intraday = portfolio_intraday.reindex(all_minutes).ffill()
 
-    # --- DAILY OHLC FOR CANDLESTICK ---
+    # --- DAILY OHLC FOR CANDLESTICK (RESAMPLE TO 1D) ---
     daily = portfolio_intraday["Total Value"].resample('B').ohlc()
-
-    # --- FLATTEN MULTI-INDEX COLUMNS ---
-    daily.columns = [col.capitalize() for col in daily.columns]  # open->Open, high->High, low->Low, close->Close
+    daily.columns = [col.capitalize() for col in daily.columns]  # Open, High, Low, Close
 
     # --- EMA LINES ---
     daily[f"EMA{ema1_days}"] = daily["Close"].ewm(span=ema1_days, adjust=False).mean()
@@ -113,7 +113,7 @@ def show():
         line=dict(color="red", width=2)
     ), row=1, col=1)
 
-    # --- RSI ALT PANEL ---
+    # --- RSI PANEL ---
     if show_rsi:
         delta = daily["Close"].diff()
         gain = delta.clip(lower=0)
@@ -129,7 +129,7 @@ def show():
             line=dict(color="purple")
         ), row=2, col=1)
 
-    # --- TRENDLINE DRAWING ---
+    # --- LAYOUT ---
     layout_dragmode = "drawline" if enable_trendline else "zoom"
     fig.update_layout(
         xaxis_rangeslider_visible=False,
@@ -138,11 +138,7 @@ def show():
         height=600,
         margin=dict(t=40, b=40)
     )
-
-    # --- Y AXIS FULL VALUES ---
-    fig.update_yaxes(tickformat=",.0f")  # 12,490 gibi tam değer
-
-    # --- X AXIS: Tarih, yatay ve okunabilir ---
+    fig.update_yaxes(tickformat=",.0f")
     fig.update_xaxes(tickangle=0, tickformat="%Y-%m-%d")
 
     st.plotly_chart(fig, use_container_width=True)
