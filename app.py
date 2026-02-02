@@ -2,58 +2,91 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-# --- PAGE CONFIG ---
+# -------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------
 st.set_page_config(layout="wide")
-st.title("📈 Portfolio Return (Clean Version)")
+st.title("📈 Portfolio Return (Core Engine Stable)")
 
-# --- GOOGLE SHEETS CSV LINK ---
+# -------------------------------------------------
+# GOOGLE SHEETS CSV LINK
+# -------------------------------------------------
 SHEET_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 )
 
-# --- LOAD DATA ---
+# -------------------------------------------------
+# LOAD & CLEAN DATA
+# -------------------------------------------------
 df = pd.read_csv(SHEET_URL)
 
-# --- BASIC CLEAN ---
 df["Date"] = pd.to_datetime(df["Date"])
 df["Quantity"] = pd.to_numeric(df["Quantity"], errors="raise")
 df["Price"] = pd.to_numeric(df["Price"], errors="raise")
 
-# CASH satırlarını hariç tut
+# CASH işlemleri portföy hesaplarına dahil edilmez
 df = df[df["Symbol"] != "CASH"]
 
-# --- INVESTED CAPITAL (NET COST BASIS) ---
-df["Cost"] = df["Quantity"] * df["Price"]
-invested_capital = df.loc[df["Quantity"] > 0, "Cost"].sum()
 
-# --- CURRENT VALUE ---
-symbols = df["Symbol"].unique().tolist()
+# -------------------------------------------------
+# CORE PORTFOLIO CALCULATION ENGINE
+# -------------------------------------------------
+def calculate_portfolio_metrics(df: pd.DataFrame) -> dict:
+    """
+    Core portfolio calculation engine.
+    This logic is locked to preserve historical correctness (%11.48).
+    """
 
-prices = yf.download(
-    symbols,
-    period="5d",
-    progress=False
-)["Close"]
+    # --- INVESTED CAPITAL ---
+    df = df.copy()
+    df["Cost"] = df["Quantity"] * df["Price"]
+    invested_capital = df.loc[df["Quantity"] > 0, "Cost"].sum()
 
-if isinstance(prices, pd.Series):
-    prices = prices.to_frame()
+    # --- CURRENT VALUE ---
+    symbols = df["Symbol"].unique().tolist()
 
-def get_last_price(symbol: str) -> float:
-    return prices[symbol].dropna().iloc[-1]
+    prices = yf.download(
+        symbols,
+        period="5d",
+        progress=False
+    )["Close"]
 
-current_value = 0.0
+    if isinstance(prices, pd.Series):
+        prices = prices.to_frame()
 
-for symbol in symbols:
-    net_quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
-    current_value += net_quantity * get_last_price(symbol)
+    def get_last_price(symbol: str) -> float:
+        return prices[symbol].dropna().iloc[-1]
 
-# --- RETURN ---
-total_return_pct = (
-    (current_value - invested_capital) / invested_capital * 100
-)
+    current_value = 0.0
+    for symbol in symbols:
+        net_quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
+        current_value += net_quantity * get_last_price(symbol)
 
-# --- OUTPUT ---
+    # --- RETURN ---
+    total_return_pct = (
+        (current_value - invested_capital) / invested_capital * 100
+    )
+
+    return {
+        "invested_capital": invested_capital,
+        "current_value": current_value,
+        "total_return_pct": total_return_pct
+    }
+
+
+# -------------------------------------------------
+# RUN CORE ENGINE
+# -------------------------------------------------
+metrics = calculate_portfolio_metrics(df)
+
+invested_capital = metrics["invested_capital"]
+current_value = metrics["current_value"]
+total_return_pct = metrics["total_return_pct"]
+
+# -------------------------------------------------
+# OUTPUT
+# -------------------------------------------------
 st.metric("Invested Capital ($)", f"{invested_capital:,.2f}")
 st.metric("Current Value ($)", f"{current_value:,.2f}")
 st.metric("Total Portfolio Return (%)", f"{total_return_pct:.2f}%")
