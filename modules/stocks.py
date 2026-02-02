@@ -63,19 +63,35 @@ def show():
 
     stocks_df = pd.DataFrame(stock_data)
 
-    # --- OUTPUT METRICS ---
-    st.subheader("📊 Stocks Portfolio Overview")
-    for i, row in stocks_df.iterrows():
-        st.metric(
-            label=f"{row['Symbol']} - Current Value ($)",
-            value=f"{row['Current Value ($)']:,.2f}",
-            delta=f"{row['Total P/L (%)']:.2f}%",
-        )
+    # --- CALCULATE TOTAL PORTFOLIO METRICS ---
+    total_cost = stocks_df["Total Cost ($)"].sum()
+    total_current_value = stocks_df["Current Value ($)"].sum()
+    total_pl = total_current_value - total_cost
+    total_pl_pct = (total_pl / total_cost * 100) if total_cost != 0 else 0
+
+    # --- ADD TOTAL ROW ---
+    total_row = pd.DataFrame({
+        "Symbol": ["TOTAL"],
+        "Quantity": [""],
+        "Total Cost ($)": [total_cost],
+        "Current Price ($)": [""],
+        "Current Value ($)": [total_current_value],
+        "Total P/L ($)": [total_pl],
+        "Total P/L (%)": [total_pl_pct],
+        "Daily Change ($)": [""],
+        "Daily Change (%)": [""]
+    })
+
+    stocks_df = pd.concat([stocks_df, total_row], ignore_index=True)
 
     # --- COLOR FORMATTING FUNCTION ---
     def color_profit(val):
-        color = 'green' if val > 0 else 'red' if val < 0 else 'black'
-        return f'color: {color}'
+        if isinstance(val, (int, float)):
+            if val > 0:
+                return 'color: green'
+            elif val < 0:
+                return 'color: red'
+        return 'color: black'
 
     # --- DETAILED TABLE ---
     st.subheader("💹 Detailed Stocks Table")
