@@ -48,6 +48,9 @@ def show():
     # --- DAILY OHLC FOR CANDLESTICK ---
     daily = portfolio_intraday["Total Value"].resample('B').ohlc()
 
+    # --- FLATTEN MULTI-INDEX COLUMNS ---
+    daily.columns = [col.capitalize() for col in daily.columns]  # open->Open, high->High, low->Low, close->Close
+
     # --- EMA LINES ---
     daily[f"EMA{ema1_days}"] = daily["Close"].ewm(span=ema1_days, adjust=False).mean()
     daily[f"EMA{ema2_days}"] = daily["Close"].ewm(span=ema2_days, adjust=False).mean()
