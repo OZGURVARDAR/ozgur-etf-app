@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 def show():
-    st.subheader("📈 Portfolio Interactive Chart (Intra-day Candlestick)")
+    st.subheader("📈 Portfolio Interactive Chart (Stable Version)")
 
     # --- SIDEBAR SETTINGS ---
     chart_type = st.sidebar.selectbox("Portfolio Chart Type", ["Line", "Candlestick", "Heiken Ashi"])
@@ -41,9 +41,12 @@ def show():
         quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
         portfolio_intraday["Total Value"] += intraday[symbol] * quantity
 
-    # --- RESAMPLE TO DAILY OHLC ---
-    daily = portfolio_intraday.resample('B').agg({'Total Value': ['first','max','min','last']})
-    daily.columns = ['Open','High','Low','Close']
+    # --- FILL MISSING BUSINESS DAYS ---
+    all_business_days = pd.bdate_range(start=portfolio_intraday.index.min(), end=portfolio_intraday.index.max())
+    portfolio_intraday = portfolio_intraday.reindex(all_business_days).ffill()
+
+    # --- DAILY OHLC FOR CANDLESTICK ---
+    daily = portfolio_intraday["Total Value"].resample('B').ohlc()
 
     # --- EMA LINES ---
     daily[f"EMA{ema1_days}"] = daily["Close"].ewm(span=ema1_days, adjust=False).mean()
@@ -123,7 +126,7 @@ def show():
             line=dict(color="purple")
         ), row=2, col=1)
 
-    # --- TRENDLINE DRAWING (Kalınlık azaltıldı) ---
+    # --- TRENDLINE DRAWING ---
     layout_dragmode = "drawline" if enable_trendline else "zoom"
     fig.update_layout(
         xaxis_rangeslider_visible=False,
