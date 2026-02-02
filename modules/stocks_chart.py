@@ -38,13 +38,23 @@ def show():
     portfolio_intraday = pd.DataFrame(index=intraday.index)
     portfolio_intraday["Total Value"] = 0
     for symbol in symbols:
-        quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
-        portfolio_intraday["Total Value"] += intraday[symbol] * quantity
+        if symbol in intraday.columns:
+            quantity = df.loc[df["Symbol"] == symbol, "Quantity"].sum()
+            portfolio_intraday["Total Value"] += intraday[symbol] * quantity
 
-    # --- FILL MISSING BUSINESS DAYS & MINUTES ---
-    all_minutes = pd.date_range(start=portfolio_intraday.index.min(),
-                                end=portfolio_intraday.index.max(),
-                                freq="15T")
+    # --- CHECK IF DATA EXISTS ---
+    if portfolio_intraday.empty or portfolio_intraday["Total Value"].isna().all():
+        st.warning("Portfolio intra-day data could not be retrieved. Please try again later.")
+        return
+
+    start = portfolio_intraday.index.min()
+    end = portfolio_intraday.index.max()
+    if pd.isna(start) or pd.isna(end):
+        st.warning("Portfolio intra-day data has invalid date range.")
+        return
+
+    # --- FILL MISSING MINUTES ---
+    all_minutes = pd.date_range(start=start, end=end, freq="15T")
     portfolio_intraday = portfolio_intraday.reindex(all_minutes).ffill()
 
     # --- DAILY OHLC FOR CANDLESTICK (RESAMPLE TO 1D) ---
