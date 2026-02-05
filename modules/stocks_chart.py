@@ -2,169 +2,196 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+from datetime import datetime
+import pytz
 
 def show():
     # --- AYARLAR ---
-    START_NAV = 100.0 # Fonumuzun açılış fiyatı (Baz Puan)
     up_color, down_color = '#26a69a', '#ef5350'
-
-    st.subheader("🛡️ TWR Performance Engine (Satıştan Etkilenmez)")
-    st.info("Bu grafik para giriş/çıkışlarını (Nakit Akışı) yok sayar. Sadece stratejinizin başarısını (Birim Fiyat) gösterir.")
-
-    # --- VERİ YÜKLEME ---
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
+    st.subheader("🚀 V3: Ultimate TWR Portfolio Terminal")
     
-    @st.cache_data(ttl=60)
-    def load_data():
+    # Sağ üst köşeye son güncelleme saati (ABD ve TSİ)
+    tz_ny = pytz.timezone('America/New_York')
+    tz_tr = pytz.timezone('Europe/Istanbul')
+    now_ny = datetime.now(tz_ny).strftime('%H:%M')
+    now_tr = datetime.now(tz_tr).strftime('%H:%M')
+    
+    col_info, col_btn = st.columns([3, 1])
+    with col_info:
+        st.caption(f"ℹ️ **Durum:** Bu grafik para giriş/çıkışlarını (Alım/Satım) yok sayar. Sadece strateji başarısını izler. | 🇺🇸 NY: {now_ny} | 🇹🇷 TR: {now_tr}")
+    with col_btn:
+        # Canlı veriyi tazelemek için buton
+        if st.button("🔄 Verileri Güncelle"):
+            st.cache_data.clear() # Cache'i temizle ki taze veri gelsin
+
+    # --- GOOGLE SHEETS VERİSİ ---
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
+
+    @st.cache_data(ttl=60) # 60 saniyelik cache (Canlı veri için kısa tutuldu)
+    def load_portfolio():
         df = pd.read_csv(SHEET_URL)
         df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
-        # Sadece hisse işlemleri
+        # Sadece hisse işlemleri (Nakit yok)
         trades = df[df["Symbol"] != "CASH"].sort_values('Date')
-        return trades
+        return trades, trades['Date'].min(), trades['Symbol'].unique().tolist()
 
-    trades = load_data()
-    symbols = trades["Symbol"].unique().tolist()
+    trades, first_date, symbols = load_portfolio()
+
+    # --- CANLI PİYASA VERİSİ ---
+    with st.spinner('Borsa verileri alınıyor (Canlı)...'):
+        # period='max' ve interval='1d' borsa açıkken bugünün "yürüyen" mumunu da getirir.
+        data = yf.download(symbols, start=first_date, interval="1d", group_by='ticker', progress=False)
+        
+        # Veri temizliği: Hafta sonları veya tatillerden gelen NaN satırlarını temizle
+        # Ancak en son satırı (bugünü) korumaya dikkat et.
+        data = data.dropna(how='all') 
+
+    # --- TWR MOTORU (ALIM/SATIM ETKİSİZLEŞTİRME) ---
     
-    if not symbols:
-        st.warning("Henüz hisse işlemi yok.")
-        return
-
-    # İlk işlem tarihi
-    start_date = trades['Date'].min()
-
-    # --- PİYASA VERİLERİ ---
-    with st.spinner('Piyasa verileri işleniyor...'):
-        # Tüm geçmiş veriyi çek
-        data = yf.download(symbols, start=start_date, interval="1d", group_by='ticker', progress=False)
-
-    # --- UNITIZATION MOTORU (FON MANTIĞI) ---
-    # Mantık: Günlük getiriyi hesapla ve zincirleme ekle. 
-    # Alım/Satım işlemleri sadece 'holding' miktarını değiştirir, getiriyi bozmaz.
-    
-    nav_history = []
-    current_nav = START_NAV
+    nav_series = []
+    current_nav = 1.0 # Endeks başlangıcı
     
     # Hangi hissede kaç adet var?
     current_holdings = {sym: 0.0 for sym in symbols}
     
-    # Tarih Döngüsü
+    # Tarih listesi
     all_dates = data.index.sort_values()
     
+    # DÖNGÜ
     for i, date in enumerate(all_dates):
-        # 1. GÜNLÜK PERFORMANSI HESAPLA (Dünden Bugüne)
-        # Formül: (Bugünkü Kapanış Değeri) / (Dünkü Kapanış Değeri)
+        # 1. ÖNCE PERFORMANS (Dünkü portföy bugün ne yaptı?)
+        # Alım/Satım yapmadan ÖNCEKİ portföyün değer değişimi hesaplanır.
         
-        portfolio_val_start = 0.0 # Gün başı değeri (Dünkü fiyatlarla)
-        portfolio_val_end = 0.0   # Gün sonu değeri (Bugünkü fiyatlarla)
+        val_start = 0.0 # Gün başı değeri (Dünkü portföy, Dünkü fiyat)
+        val_end = 0.0   # Gün sonu değeri (Dünkü portföy, Bugünkü fiyat)
+        
+        # Gün içi hareket simülasyonu (OHLC Mumu için)
+        val_high = 0.0
+        val_low = 0.0
+        val_open = 0.0
         
         has_assets = False
         
         for sym, qty in current_holdings.items():
-            if qty != 0: # Elimizde varsa
+            if qty != 0:
                 has_assets = True
                 try:
                     s_data = data[sym] if len(symbols) > 1 else data
                     
-                    # Bugünün verileri
-                    price_open = s_data['Open'].loc[date]
-                    price_high = s_data['High'].loc[date]
-                    price_low = s_data['Low'].loc[date]
-                    price_close = s_data['Close'].loc[date]
+                    # Bugünün Fiyatları
+                    p_close = s_data['Close'].loc[date]
+                    p_open = s_data['Open'].loc[date]
+                    p_high = s_data['High'].loc[date]
+                    p_low = s_data['Low'].loc[date]
                     
-                    # Dünün kapanış fiyatı (Referans)
+                    # Dünün Fiyatı (Referans)
                     if i > 0:
-                        prev_date = all_dates[i-1]
-                        price_prev = s_data['Close'].loc[prev_date]
+                        p_prev = s_data['Close'].loc[all_dates[i-1]]
                     else:
-                        price_prev = price_open # İlk günse Open baz al
-
-                    # Değerleme
-                    portfolio_val_start += qty * price_prev
+                        p_prev = p_open # İlk gün açılış fiyatı
                     
-                    # Mum Oluşturma (Sanal Fon Mumu)
-                    # Burada sadece kapanışı değil, gün içi hareketi de NAV'a yansıtıyoruz
-                    # Ancak basitlik ve hata önleme için 'Close to Close' getiriyi esas alıp
-                    # High/Low'u oransal türeteceğiz.
-                    portfolio_val_end += qty * price_close
+                    # Hesaplama (Alım/Satım öncesi mevcut varlıklarla)
+                    val_start += qty * p_prev
+                    val_end += qty * p_close
+                    
+                    val_open += qty * p_open
+                    val_high += qty * p_high
+                    val_low += qty * p_low
                     
                 except: continue
         
-        # 2. NAV GÜNCELLEME (Eğer elimizde hisse varsa)
-        if has_assets and portfolio_val_start > 0:
-            daily_return = portfolio_val_end / portfolio_val_start
+        # 2. NAV GÜNCELLEME
+        if has_assets and val_start > 0:
+            # Günlük Getiri Çarpanı
+            daily_return = val_end / val_start
             
-            # Gün içi oynaklığı hesaplamak için basit oranlar
-            # (Bu kısım gerçek High/Low verisini simüle eder)
-            day_open_val = 0
-            day_high_val = 0
-            day_low_val = 0
-            
-            for sym, qty in current_holdings.items():
-                if qty != 0:
-                    try:
-                        s = data[sym].loc[date] if len(symbols)>1 else data.loc[date]
-                        day_open_val += qty * s['Open']
-                        day_high_val += qty * s['High']
-                        day_low_val += qty * s['Low']
-                    except: pass
-            
-            # NAV Mumlarını Hesapla
-            # Mantık: NAV sadece performansa göre değişir.
-            # Bugün portföy %2 arttıysa, NAV da %2 artar.
-            nav_open = current_nav * (day_open_val / portfolio_val_start)
-            nav_high = current_nav * (day_high_val / portfolio_val_start)
-            nav_low = current_nav * (day_low_val / portfolio_val_start)
+            # Mum fitillerini oransal hesapla
+            nav_open = current_nav * (val_open / val_start)
+            nav_high = current_nav * (val_high / val_start)
+            nav_low = current_nav * (val_low / val_start)
             nav_close = current_nav * daily_return
             
-            nav_history.append({
-                'Date': date, 
-                'Open': nav_open, 'High': nav_high, 'Low': nav_low, 'Close': nav_close
+            nav_series.append({
+                'Date': date, 'Open': nav_open, 'High': nav_high, 
+                'Low': nav_low, 'Close': nav_close
             })
-            
-            current_nav = nav_close # Yeni baz fiyat
+            current_nav = nav_close # Yeni baz
             
         elif not has_assets:
-            # Elimizde hiç hisse yoksa (Nakit), NAV sabit kalır (Risk-free rate 0 kabul ettik)
-            nav_history.append({
-                'Date': date, 
-                'Open': current_nav, 'High': current_nav, 'Low': current_nav, 'Close': current_nav
+            # Varlık yoksa NAV sabit (Yatay çizgi)
+            nav_series.append({
+                'Date': date, 'Open': current_nav, 'High': current_nav, 
+                'Low': current_nav, 'Close': current_nav
             })
-
-        # 3. İŞLEMLERİ UYGULA (Yarın için hazırlık)
-        # Alım/Satımlar performansı etkilemez, sadece 'current_holdings' miktarını değiştirir.
+            
+        # 3. ŞİMDİ ALIM/SATIMLARI İŞLE (Yarına hazırlık)
+        # Bu işlem NAV'ı etkilemez, sadece yarınki 'qty' miktarını değiştirir.
         todays_trades = trades[trades['Date'] == date]
         for _, row in todays_trades.iterrows():
             sym = row['Symbol']
-            qty = row['Quantity'] # Satışlar negatif olduğu için çıkarma işlemi yapar
+            qty = row['Quantity']
             current_holdings[sym] = current_holdings.get(sym, 0) + qty
 
-    # --- GRAFİK HAZIRLIK ---
-    df_nav = pd.DataFrame(nav_history)
+    # --- ÖLÇEKLEME (SCALING) ---
+    # Endeksi (NAV) Gerçek Dolara Çevirme
+    
+    # 1. Şu anki portföyün gerçek piyasa değerini bul
+    current_market_value = 0.0
+    # En son geçerli fiyatları al (Bugün)
+    last_idx = all_dates[-1]
+    
+    for sym, qty in current_holdings.items():
+        if qty != 0:
+            try:
+                s_data = data[sym] if len(symbols) > 1 else data
+                last_price = s_data['Close'].iloc[-1]
+                current_market_value += qty * last_price
+            except: pass
+            
+    # 2. Ölçekleme Katsayısı
+    if nav_series and nav_series[-1]['Close'] > 0:
+        scalar = current_market_value / nav_series[-1]['Close']
+    else:
+        scalar = 1.0
+
+    df_nav = pd.DataFrame(nav_series)
+    # Tüm NAV serisini gerçek dolar değerine ölçekle
+    df_nav['Open'] *= scalar
+    df_nav['High'] *= scalar
+    df_nav['Low'] *= scalar
+    df_nav['Close'] *= scalar
     df_nav['Date_Str'] = df_nav['Date'].dt.strftime('%d %b %y')
 
     # --- DASHBOARD ---
-    last_p = df_nav['Close'].iloc[-1]
-    prev_p = df_nav['Close'].iloc[-2]
-    diff = last_p - prev_p
-    diff_pct = (diff / prev_p) * 100
+    # Son günün mumu
+    last_c = df_nav['Close'].iloc[-1]
+    prev_c = df_nav['Close'].iloc[-2] if len(df_nav) > 1 else last_c
+    
+    diff = last_c - prev_c
+    diff_pct = (diff / prev_c) * 100
+    
+    st.metric("TWR Portföy Değeri (Düzeltilmiş)", f"${last_c:,.2f}", f"{diff_pct:+.2f}%")
 
-    col1, col2 = st.columns([1,2])
-    col1.metric("Strateji Puanı (Endeks)", f"{last_p:.2f}", f"{diff_pct:+.2f}%")
-    col2.caption("Başlangıç Puanı: 100.00 | Bu değer portföyünüzün toplam dolar değerini değil, başarısını gösterir.")
-
-    # --- ÇİZİM ---
+    # --- GRAFİK ---
     fig = go.Figure(data=[go.Candlestick(
         x=df_nav['Date_Str'],
         open=df_nav['Open'], high=df_nav['High'], low=df_nav['Low'], close=df_nav['Close'],
-        increasing_line_color=up_color, decreasing_line_color=down_color
+        increasing_line_color=up_color, decreasing_line_color=down_color, name="Portfolio"
     )])
 
+    # Canlı Mum Efekti için son muma özel not
+    if now_ny < "16:00": # Piyasa açıksa
+        fig.layout.title = "🟢 PİYASA AÇIK - Canlı Fiyatlama"
+    else:
+        fig.layout.title = "🔴 PİYASA KAPALI - Son Kapanış"
+
     fig.update_layout(
-        height=600, template="plotly_white",
-        title="Portfolio Performance Index (Net Asset Value)",
-        yaxis_title="NAV Price (Base 100)",
-        xaxis_type='category',
-        xaxis_rangeslider_visible=False
+        height=650, template="plotly_white",
+        yaxis=dict(side="right", tickformat=",.0f", tickprefix="$", gridcolor="#f0f0f0"),
+        xaxis=dict(type='category', nticks=10, gridcolor="#f0f0f0"),
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        margin=dict(l=0, r=50, t=30, b=10)
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
