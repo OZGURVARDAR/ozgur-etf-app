@@ -2,86 +2,175 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from datetime import datetime
+import pytz
 
 def show():
-    st.subheader("🛡️ Risk & Performance Terminal")
+    # --- STİL VE AYARLAR ---
+    up_color, down_color = '#26a69a', '#ef5350'
+    st.subheader("🚀 Ultimate TWR Portfolio Terminal")
     
-    if st.sidebar.button("🔄 Terminali Yenile"):
-        st.cache_data.clear()
-        st.rerun()
+    # Sidebar
+    st.sidebar.markdown("### 🎨 Grafik Ayarları")
+    chart_mode = st.sidebar.selectbox("Mum Tipi", ["Candlestick", "Heiken Ashi"])
+    
+    tz_ny = pytz.timezone('America/New_York')
+    now_ny = datetime.now(tz_ny).strftime('%H:%M')
+    
+    col_info, col_btn = st.columns([3, 1])
+    with col_info:
+        st.caption(f"ℹ️ **TWR Modu:** Alım/Satımlardan arındırılmış gerçek performans. | 🇺🇸 NY: {now_ny}")
+    with col_btn:
+        if st.button("🔄 Canlı Veri Yenile"):
+            st.cache_data.clear()
 
+    # --- VERİ YÜKLEME ---
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 
-    @st.cache_data(ttl=300)
-    def fetch_all():
+    @st.cache_data(ttl=60)
+    def load_portfolio():
         df = pd.read_csv(SHEET_URL)
         df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
+        # Sadece hisseler
         trades = df[df["Symbol"] != "CASH"].sort_values('Date')
-        syms = trades["Symbol"].unique().tolist()
-        data = yf.download(syms + ["^VIX", "SPY"], start=trades['Date'].min(), interval="1d", progress=False)
-        return trades, data, syms
+        return trades
 
-    trades, raw_data, syms = fetch_all()
-    if raw_data.empty: return
+    trades = load_portfolio()
+    symbols = trades["Symbol"].unique().tolist()
+    first_date = trades['Date'].min()
 
-    # Verileri Ayıkla
-    closes = raw_data['Close'].ffill()
-    opens = raw_data['Open'].ffill()
-    highs = raw_data['High'].ffill()
-    lows = raw_data['Low'].ffill()
+    with st.spinner('Piyasa verileri Seeking Alpha ile senkronize ediliyor...'):
+        data = yf.download(symbols, start=first_date, interval="1d", group_by='ticker', progress=False)
+        data = data.dropna(how='all')
 
-    # TWR Hesaplama
-    nav_pts = []
-    c_nav = 1.0
-    holdings = {s: 0.0 for s in syms}
-    dates = closes.index.sort_values()
-
-    for i, d in enumerate(dates):
-        v_start, v_end, v_o, v_h, v_l = 0.0, 0.0, 0.0, 0.0, 0.0
-        active = False
-        for s in syms:
-            if holdings[s] > 0:
-                active = True
-                p_prev = closes[s].iloc[i-1] if i > 0 else opens.at[d, s]
-                v_start += holdings[s] * p_prev
-                v_end += holdings[s] * closes.at[d, s]
-                v_o += holdings[s] * opens.at[d, s]
-                v_h += holdings[s] * highs.at[d, s]
-                v_l += holdings[s] * lows.at[d, s]
-        
-        if active and v_start > 0:
-            ratio_v = (c_nav * (v_end/v_start) * 100) / (closes.at[d, "^VIX"] if "^VIX" in closes.columns else 20)
-            nav_pts.append({'Date': d, 'Open': c_nav*(v_o/v_start), 'High': c_nav*(v_h/v_start), 
-                            'Low': c_nav*(v_l/v_start), 'Close': c_nav*(v_end/v_start), 'Ratio': ratio_v})
-            c_nav *= (v_end/v_start)
-
-        for _, r in trades[trades['Date'] == d].iterrows():
-            holdings[r['Symbol']] += r['Quantity']
-
-    # Görselleştirme
-    df_res = pd.DataFrame(nav_pts)
-    # Gerçek fiyata ölçekle
-    last_val = sum(holdings[s] * closes[s].iloc[-1] for s in syms if s in closes.columns)
-    scalar = last_val / df_res['Close'].iloc[-1] if not df_res.empty else 1
-    for c in ['Open', 'High', 'Low', 'Close']: df_res[c] *= scalar
-
-    # Metrikler (Beta Hesabı Dahil)
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Portföy Değeri", f"${last_val:,.2f}")
+    # --- 1. KESİN GÜNCEL DEĞER HESABI (Scaling Base) ---
+    # Bu kısım tabloyla birebir aynı sonucu üretir
+    final_market_value = 0.0
+    yesterday_market_value = 0.0
     
-    # Beta
-    spy_ret = closes['SPY'].pct_change()
-    pf_ret = df_res['Close'].pct_change()
-    beta_v = pf_ret.cov(spy_ret) / spy_ret.var() if len(pf_ret)>1 else 1.0
-    col2.metric("Beta (Risk)", f"{beta_v:.2f}")
-    col3.metric("Ratio", f"{df_res['Ratio'].iloc[-1]:.2f}")
+    for sym in symbols:
+        qty = trades[trades["Symbol"] == sym]["Quantity"].sum()
+        if qty != 0:
+            try:
+                s_data = data[sym] if len(symbols) > 1 else data
+                current_price = s_data['Close'].iloc[-1]
+                prev_price = s_data['Close'].iloc[-2] if len(s_data) > 1 else current_price
+                
+                final_market_value += qty * current_price
+                yesterday_market_value += qty * prev_price
+            except: pass
 
-    # Grafik
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-    fig.add_trace(go.Candlestick(x=df_res['Date'], open=df_res['Open'], high=df_res['High'], 
-                                 low=df_res['Low'], close=df_res['Close'], name="Portföy"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_res['Date'], y=df_res['Ratio'], line=dict(color='orange'), name="Ratio"), row=2, col=1)
-    fig.add_hline(y=5, line_dash="dash", line_color="red", row=2, col=1)
-    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
+    # --- 2. TWR / NAV MOTORU ---
+    nav_series = []
+    current_nav = 1.0 
+    current_holdings = {sym: 0.0 for sym in symbols}
+    all_dates = data.index.sort_values()
+    
+    for i, date in enumerate(all_dates):
+        val_start, val_end = 0.0, 0.0
+        val_open, val_high, val_low = 0.0, 0.0, 0.0
+        has_assets = False
+        
+        # Günlük performans (İşlem öncesi)
+        for sym, qty in current_holdings.items():
+            if qty != 0:
+                has_assets = True
+                try:
+                    s_data = data[sym] if len(symbols) > 1 else data
+                    row = s_data.loc[date]
+                    p_prev = s_data['Close'].loc[all_dates[i-1]] if i > 0 else row['Open']
+
+                    val_start += qty * p_prev
+                    val_end += qty * row['Close']
+                    val_open += qty * row['Open']
+                    val_high += qty * row['High']
+                    val_low += qty * row['Low']
+                except: continue
+        
+        if has_assets and val_start > 0:
+            r_open, r_high, r_low, r_close = val_open/val_start, val_high/val_start, val_low/val_start, val_end/val_start
+            nav_series.append({
+                'Date': date, 'Open': current_nav * r_open, 'High': current_nav * r_high, 
+                'Low': current_nav * r_low, 'Close': current_nav * r_close
+            })
+            current_nav *= r_close
+        else:
+            # İlk gün veya işlem yoksa
+            d_open = current_nav
+            if i == 0 and not nav_series:
+                # İlk günün mumu için o günün piyasa hareketini kullan
+                nav_series.append({'Date': date, 'Open': 1.0, 'High': 1.0, 'Low': 1.0, 'Close': 1.0})
+            else:
+                nav_series.append({'Date': date, 'Open': current_nav, 'High': current_nav, 'Low': current_nav, 'Close': current_nav})
+
+        # İşlemleri bugün bittikten sonra ekle (Yarının performansını etkilesin)
+        todays_trades = trades[trades['Date'] == date]
+        for _, row in todays_trades.iterrows():
+            current_holdings[row['Symbol']] += row['Quantity']
+
+    # --- 3. SCALING & ALIGNMENT ---
+    df_nav = pd.DataFrame(nav_series)
+    
+    # Grafiğin son noktasını tablo değeriyle eşitleyen sihirli katsayı
+    if df_nav['Close'].iloc[-1] != 0:
+        scalar = final_market_value / df_nav['Close'].iloc[-1]
+    else:
+        scalar = 1.0
+        
+    for col in ['Open', 'High', 'Low', 'Close']:
+        df_nav[col] *= scalar
+    
+    df_nav['Date_Str'] = df_nav['Date'].dt.strftime('%d %b %y')
+
+    # --- METRİKLER ---
+    # Günlük % Değişim (Seeking Alpha Mantığı: Mevcut hisseler dünden bugüne ne yaptı?)
+    daily_chg_pct = ((final_market_value - yesterday_market_value) / yesterday_market_value * 100) if yesterday_market_value != 0 else 0
+    
+    st.metric("Güncel Portföy Değeri", f"${final_market_value:,.2f}", f"{daily_chg_pct:+.2f}%")
+
+    # --- GRAFİK ---
+    fig = go.Figure()
+
+    if chart_mode == "Heiken Ashi":
+        # HA Hesaplama
+        ha_close = (df_nav['Open'] + df_nav['High'] + df_nav['Low'] + df_nav['Close']) / 4
+        ha_open = [(df_nav['Open'].iloc[0] + df_nav['Close'].iloc[0]) / 2]
+        for i in range(1, len(df_nav)):
+            ha_open.append((ha_open[i-1] + ha_close.iloc[i-1]) / 2)
+        
+        df_nav['HA_Open'] = ha_open
+        df_nav['HA_Close'] = ha_close
+        df_nav['HA_High'] = df_nav[['High', 'HA_Open', 'HA_Close']].max(axis=1)
+        df_nav['HA_Low'] = df_nav[['Low', 'HA_Open', 'HA_Close']].min(axis=1)
+
+        fig.add_trace(go.Candlestick(
+            x=df_nav['Date_Str'], open=df_nav['HA_Open'], high=df_nav['HA_High'], 
+            low=df_nav['HA_Low'], close=df_nav['HA_Close'],
+            increasing_line_color=up_color, decreasing_line_color=down_color, name="HA"
+        ))
+    else:
+        fig.add_trace(go.Candlestick(
+            x=df_nav['Date_Str'], open=df_nav['Open'], high=df_nav['High'], 
+            low=df_nav['Low'], close=df_nav['Close'],
+            increasing_line_color=up_color, decreasing_line_color=down_color, name="Standart"
+        ))
+
+    # --- SON FİYAT ÇİZGİSİ ---
+    fig.add_hline(
+        y=final_market_value, line_dash="dot", line_color="red", line_width=1.5,
+        annotation_text=f"${final_market_value:,.2f}", 
+        annotation_position="right",
+        annotation_font=dict(color="white", size=12),
+        annotation_bgcolor="red"
+    )
+
+    fig.update_layout(
+        height=700, template="plotly_white",
+        yaxis=dict(side="right", tickformat=",.0f", tickprefix="$", gridcolor="#f4f4f4"),
+        xaxis=dict(type='category', nticks=12, gridcolor="#f4f4f4"),
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=0, r=80, t=20, b=20),
+        hovermode="x unified"
+    )
+
     st.plotly_chart(fig, use_container_width=True)
