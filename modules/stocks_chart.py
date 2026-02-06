@@ -174,3 +174,4 @@ def show():
     )
 
     st.plotly_chart(fig, use_container_width=True)
+    return df_nav, closes
