@@ -6,43 +6,61 @@ from datetime import datetime
 import pytz
 
 def show():
-    # --- AYARLAR ---
+    # --- STİL VE AYARLAR ---
     up_color, down_color = '#26a69a', '#ef5350'
     st.subheader("🚀 Ultimate TWR Portfolio Terminal")
     
-    # --- SIDEBAR KONTROLLERİ ---
+    # Sidebar
     st.sidebar.markdown("### 🎨 Grafik Ayarları")
     chart_mode = st.sidebar.selectbox("Mum Tipi", ["Candlestick", "Heiken Ashi"])
     
-    # Zaman Bilgisi
     tz_ny = pytz.timezone('America/New_York')
-    tz_tr = pytz.timezone('Europe/Istanbul')
     now_ny = datetime.now(tz_ny).strftime('%H:%M')
     
     col_info, col_btn = st.columns([3, 1])
     with col_info:
-        st.caption(f"ℹ️ **Strateji Performansı:** Alım/Satımlardan arındırılmış NAV eğrisidir. | 🇺🇸 NY: {now_ny}")
+        st.caption(f"ℹ️ **TWR Modu:** Alım/Satımlardan arındırılmış gerçek performans. | 🇺🇸 NY: {now_ny}")
     with col_btn:
         if st.button("🔄 Canlı Veri Yenile"):
             st.cache_data.clear()
 
-    # --- DATA LOADING ---
+    # --- VERİ YÜKLEME ---
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1O_-QZBaISwueXmFB33wkljlXi_KQNPE2aEmtHOXoyyw/export?format=csv"
 
     @st.cache_data(ttl=60)
     def load_portfolio():
         df = pd.read_csv(SHEET_URL)
         df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
+        # Sadece hisseler
         trades = df[df["Symbol"] != "CASH"].sort_values('Date')
-        return trades, trades['Date'].min(), trades['Symbol'].unique().tolist()
+        return trades
 
-    trades, first_date, symbols = load_portfolio()
+    trades = load_portfolio()
+    symbols = trades["Symbol"].unique().tolist()
+    first_date = trades['Date'].min()
 
-    with st.spinner('Piyasa verileri senkronize ediliyor...'):
+    with st.spinner('Piyasa verileri Seeking Alpha ile senkronize ediliyor...'):
         data = yf.download(symbols, start=first_date, interval="1d", group_by='ticker', progress=False)
         data = data.dropna(how='all')
 
-    # --- TWR & NAV ENGINE ---
+    # --- 1. KESİN GÜNCEL DEĞER HESABI (Scaling Base) ---
+    # Bu kısım tabloyla birebir aynı sonucu üretir
+    final_market_value = 0.0
+    yesterday_market_value = 0.0
+    
+    for sym in symbols:
+        qty = trades[trades["Symbol"] == sym]["Quantity"].sum()
+        if qty != 0:
+            try:
+                s_data = data[sym] if len(symbols) > 1 else data
+                current_price = s_data['Close'].iloc[-1]
+                prev_price = s_data['Close'].iloc[-2] if len(s_data) > 1 else current_price
+                
+                final_market_value += qty * current_price
+                yesterday_market_value += qty * prev_price
+            except: pass
+
+    # --- 2. TWR / NAV MOTORU ---
     nav_series = []
     current_nav = 1.0 
     current_holdings = {sym: 0.0 for sym in symbols}
@@ -53,14 +71,13 @@ def show():
         val_open, val_high, val_low = 0.0, 0.0, 0.0
         has_assets = False
         
+        # Günlük performans (İşlem öncesi)
         for sym, qty in current_holdings.items():
             if qty != 0:
                 has_assets = True
                 try:
                     s_data = data[sym] if len(symbols) > 1 else data
-                    # O güne ait veriler
                     row = s_data.loc[date]
-                    # Dünkü fiyat (Referans)
                     p_prev = s_data['Close'].loc[all_dates[i-1]] if i > 0 else row['Open']
 
                     val_start += qty * p_prev
@@ -71,48 +88,47 @@ def show():
                 except: continue
         
         if has_assets and val_start > 0:
-            # Performans Oranları
             r_open, r_high, r_low, r_close = val_open/val_start, val_high/val_start, val_low/val_start, val_end/val_start
-            
             nav_series.append({
                 'Date': date, 'Open': current_nav * r_open, 'High': current_nav * r_high, 
                 'Low': current_nav * r_low, 'Close': current_nav * r_close
             })
             current_nav *= r_close
         else:
-            nav_series.append({'Date': date, 'Open': current_nav, 'High': current_nav, 'Low': current_nav, 'Close': current_nav})
+            # İlk gün veya işlem yoksa
+            d_open = current_nav
+            if i == 0 and not nav_series:
+                # İlk günün mumu için o günün piyasa hareketini kullan
+                nav_series.append({'Date': date, 'Open': 1.0, 'High': 1.0, 'Low': 1.0, 'Close': 1.0})
+            else:
+                nav_series.append({'Date': date, 'Open': current_nav, 'High': current_nav, 'Low': current_nav, 'Close': current_nav})
 
-        # İşlemleri GÜN SONUNDA ekle (Alış/Satış performansı bozmasın diye)
+        # İşlemleri bugün bittikten sonra ekle (Yarının performansını etkilesin)
         todays_trades = trades[trades['Date'] == date]
         for _, row in todays_trades.iterrows():
             current_holdings[row['Symbol']] += row['Quantity']
 
-    # --- EŞİTLEME (SCALING FIX) ---
-    # Tablodaki "Güncel Değer" ile birebir eşitleme
-    current_market_value = 0.0
-    for sym, qty in current_holdings.items():
-        if qty != 0:
-            try:
-                s_data = data[sym] if len(symbols) > 1 else data
-                current_market_value += qty * s_data['Close'].iloc[-1]
-            except: pass
-
-    # Scalar: Gerçek Dolar / Son NAV Endeksi
-    scalar = current_market_value / nav_series[-1]['Close'] if nav_series[-1]['Close'] > 0 else 1.0
-    
+    # --- 3. SCALING & ALIGNMENT ---
     df_nav = pd.DataFrame(nav_series)
+    
+    # Grafiğin son noktasını tablo değeriyle eşitleyen sihirli katsayı
+    if df_nav['Close'].iloc[-1] != 0:
+        scalar = final_market_value / df_nav['Close'].iloc[-1]
+    else:
+        scalar = 1.0
+        
     for col in ['Open', 'High', 'Low', 'Close']:
         df_nav[col] *= scalar
     
     df_nav['Date_Str'] = df_nav['Date'].dt.strftime('%d %b %y')
 
-    # --- METRİK ---
-    last_val = df_nav['Close'].iloc[-1]
-    prev_val = df_nav['Close'].iloc[-2] if len(df_nav) > 1 else last_val
-    chg_pct = ((last_val - prev_val) / prev_val) * 100
-    st.metric("Güncel Portföy Değeri", f"${last_val:,.2f}", f"{chg_pct:+.2f}%")
+    # --- METRİKLER ---
+    # Günlük % Değişim (Seeking Alpha Mantığı: Mevcut hisseler dünden bugüne ne yaptı?)
+    daily_chg_pct = ((final_market_value - yesterday_market_value) / yesterday_market_value * 100) if yesterday_market_value != 0 else 0
+    
+    st.metric("Güncel Portföy Değeri", f"${final_market_value:,.2f}", f"{daily_chg_pct:+.2f}%")
 
-    # --- GRAFİK ÇİZİMİ ---
+    # --- GRAFİK ---
     fig = go.Figure()
 
     if chart_mode == "Heiken Ashi":
@@ -139,10 +155,10 @@ def show():
             increasing_line_color=up_color, decreasing_line_color=down_color, name="Standart"
         ))
 
-    # --- SON FİYAT ÇİZGİSİ & ETİKETİ ---
+    # --- SON FİYAT ÇİZGİSİ ---
     fig.add_hline(
-        y=last_val, line_dash="dot", line_color="red", line_width=1.5,
-        annotation_text=f"${last_val:,.2f}", 
+        y=final_market_value, line_dash="dot", line_color="red", line_width=1.5,
+        annotation_text=f"${final_market_value:,.2f}", 
         annotation_position="right",
         annotation_font=dict(color="white", size=12),
         annotation_bgcolor="red"
@@ -151,7 +167,7 @@ def show():
     fig.update_layout(
         height=700, template="plotly_white",
         yaxis=dict(side="right", tickformat=",.0f", tickprefix="$", gridcolor="#f4f4f4"),
-        xaxis=dict(type='category', nticks=12, gridcolor="#f4f4f4", title=""),
+        xaxis=dict(type='category', nticks=12, gridcolor="#f4f4f4"),
         xaxis_rangeslider_visible=False,
         margin=dict(l=0, r=80, t=20, b=20),
         hovermode="x unified"
